@@ -84,6 +84,40 @@ const errBrief = errorHotspots.map((e, i) => {
 	return `${i + 1}. [错误] agent=${e.agent} ×${e.count} 形状=${e.shape} 首末=${e.firstTs}~${e.lastTs} 证据指针=${evs}`;
 });
 
+// ---------------------------------------------------------------------------
+// draft 近亲名单（洞4，洄洄 #708 裁决「输入侧补，补的是名字不是名录」）：
+// 经图不动、409 不动、巡山兜底不动——只在分身输入侧给 draft 一行名录。
+// 数据源 = 山海 /darkzone（draft 从未被 push/expand，天然在暗区名单里，[layer/status] 可过滤）。
+// 失败必须出声降级：拉不到名单 ≠ 名单为空，蒙眼判案比瞎猜近亲更糟的是「以为没有近亲」。
+// ---------------------------------------------------------------------------
+let draftRoster = null; // null=拉取失败（出声降级）；""=无 draft；非空=逐个名字缩写
+try {
+	const res = await fetch(`${SHELL_URL}/tools/invoke`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action: "grimoire_darkzone", agent: "retropad-1" }),
+	});
+	const data = await res.json();
+	const text = typeof data?.body === "string" ? data.body : JSON.stringify(data?.body ?? data);
+	// 行形状：name  [layer/status]；draft 行 = status 为 draft
+	const drafts = [];
+	for (const line of text.split("\n")) {
+		const m = line.match(/^(\S+)\s+\[(\S+)\/(\S+)\]/);
+		if (m && m[3] === "draft") drafts.push(m[1]);
+	}
+	draftRoster = drafts.map((n) => abbreviate(n)).join(", ");
+	console.log(`[retropad] draft 近亲名单：${drafts.length} 本（${draftRoster || "无"}）`);
+} catch (e) {
+	console.warn(`[retropad] draft 名单拉取失败——分身将看不到近亲（查重照做，但 409 挡不住的近亲这轮防不了）：${e.message}`);
+}
+
+/** 洞4 缩写（洄洄 #708：「数量+名字缩写（首词+hash前4）」）：hash 前缀用名字首词的确定性短哈希 */
+function abbreviate(name) {
+	let h = 0;
+	for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+	return `${name.split("-")[0]}~${h.toString(16).slice(0, 4)}`;
+}
+
 const prompt = `你是 Pianist 的复盘分身（retropad）。你的唯一任务：对下面这些机械扫描攒出的热点，判断第三维——认知浪费：这步骤还值不值得一个会推理的主体重新想一遍。
 
 ## 你拿到的是预处理过的热点摘要（重复性和确定性已由扫描器机械判过，不用你判）
@@ -101,7 +135,8 @@ ${errBrief.join("\n") || "（无）"}
 3. 每个 candidate 必须能回答：编译掉的是什么判断、为何不心疼（JP 降权签名）、何时交回判断（适用条件/必须上浮的情形）。
 4. 你只有一个工具 pianist_bridge（action=payload 形如 {action:"grimoire_map", payload:{}}），只能读Grimoire的经图查重——已有 capability 直接复用，不重复提交。
 5. 健康检查：经图中无你产出过的资产则跳过（author=retropad-1 的条目为零时，健康问整段跳过，verdict 里的 health 填 "n/a"）。
-6. 产出格式：最后一个 message 必须是合法 JSON（其余解释文字放前面）：
+6. 近亲防撞：待审区已有 draft ${draftRoster === null ? "（名单拉取失败，本轮近亲盲判——candidate 名字更要保守）" : `（${draftRoster || "无"}）`}。409 只挡同名不挡近亲——起名前先对照上面这行，名字撞上近亲变体就换名或改投「复用既有 draft」的理由。
+7. 产出格式：最后一个 message 必须是合法 JSON（其余解释文字放前面）：
    {"verdict":"nothing"|"candidates", "health":"ok"|"n/a"|"issues:<一句话>", "candidates":[...], "note":"一句话收工说明"}
 
 现在开始。先查经图，再下裁决。`;
