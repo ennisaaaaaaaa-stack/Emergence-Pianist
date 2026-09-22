@@ -1,6 +1,12 @@
 // 热路径正戏：造一个「真值得记」的 candidate 场景——pianist连续 4 天修同类编译错误
 // （同指纹 read→bash(同构编译命令)→edit，错误后再来一轮——真实工作里长 skill 的形状）
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+// repo 根按本文件位置解析——spawn 相对路径按子进程 cwd 解析，cwd 指向
+// /tmp/retropad-fixture 时 ./node_modules/... 会 ENOENT（公版干净环境复现过）
+const PI_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "node_modules", ".bin", "pi");
 
 // 任务：修一个可复现的失败测试（真文件真失败真修——不是演的）
 // /tmp/retropad-fixture/math.test.js 有个 bug：加法写成减法。每轮让pianist：
@@ -34,7 +40,7 @@ for (let i = 1; i <= 4; i++) {
 	fs.writeFileSync("/tmp/retropad-fixture/math.js", BUGGED); // 每轮重置 bug
 	console.log(`===== 第 ${i} 轮 =====`);
 	await new Promise((resolve) => {
-		const child = spawn("./node_modules/.bin/pi", ["-p", "--model", "zai-coding-cn/glm-5.2", TASK], {
+		const child = spawn(PI_BIN, ["-p", "--model", "zai-coding-cn/glm-5.2", TASK], {
 			cwd: "/tmp/retropad-fixture",
 			env,
 			stdio: ["ignore", "pipe", "pipe"],
