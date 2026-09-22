@@ -182,19 +182,42 @@ function wireTelemetry(pi: ExtensionAPI) {
 		if (buffer.length >= TELEMETRY_BATCH) void flush();
 	}
 
+	// 洞1台账（洄洄 #708 裁决）：壳在场时 ingest 失败的丢弃必须出声——出声≠中断，
+	// 丢弃行为不变（旁挂坏了变慢不变哑），但暗区不许无痕。拆卸态静默合法（取舍见 README）。
+	let dropped = { batches: 0, events: 0, firstTs: null as string | null, lastReason: null as string | null };
+
+	function noteDrop(batchLen: number, err: unknown) {
+		dropped.batches += 1;
+		dropped.events += batchLen;
+		dropped.firstTs ??= new Date().toISOString();
+		dropped.lastReason = String((err as { message?: unknown })?.message ?? err);
+		console.warn(
+			`[pianist-telemetry] ingest 失败：丢弃本批 ${batchLen} 条（累计 ${dropped.batches} 批/${dropped.events} 条）——${dropped.lastReason}`,
+		);
+	}
+
+	/** session 边界汇总：把整场的丢弃账一次报清，报完清零 */
+	function summarizeDrops() {
+		if (dropped.batches === 0) return;
+		console.warn(
+			`[pianist-telemetry] session 汇总：ingest 失败 ${dropped.batches} 次，丢弃遥测 ${dropped.events} 条（首例 ${dropped.firstTs}，末因 ${dropped.lastReason}）`,
+		);
+		dropped = { batches: 0, events: 0, firstTs: null, lastReason: null };
+	}
+
 	async function flush() {
 		if (buffer.length === 0) return;
 		const batch = buffer;
 		buffer = [];
-		if (!shellUrl()) return; // 壳不在场：丢弃（不缓存——遥测是热数据不是账本）
+		if (!shellUrl()) return; // 壳不在场=拆卸态：静默丢弃合法（不缓存——遥测是热数据不是账本）
 		try {
 			await shellFetch("/telemetry/ingest", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ agent: AGENT_ID, events: batch }),
 			});
-		} catch {
-			// 上报失败即丢弃——遥测是旁挂，坏了变慢不变哑
+		} catch (err) {
+			noteDrop(batch.length, err); // 壳在场：warn+计数出声，丢弃照旧
 		}
 	}
 
@@ -234,9 +257,10 @@ function wireTelemetry(pi: ExtensionAPI) {
 		void flush();
 	});
 
-	// 换 session/退出：最后冲一次
-	pi.on("session_shutdown", () => {
-		void flush();
+	// 换 session/退出：最后冲一次，然后出整场丢弃汇总（洞1：报完清零）
+	pi.on("session_shutdown", async () => {
+		await flush();
+		summarizeDrops();
 	});
 }
 

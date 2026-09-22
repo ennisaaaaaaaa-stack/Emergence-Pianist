@@ -83,5 +83,33 @@ console.log("ledger entry:", entries[0]?.type === "pianist.session_start" && ent
 const out = await tools[0].execute("t1", { action: "test" }, undefined, undefined, {});
 console.log("bridge stub:", out.details.wired === false && out.content[0].text.includes("PIANIST_SHELL_URL"));
 
-const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false];
-console.log("PASS " + checks.filter(Boolean).length + "/6");
+// 6) 洞1：壳在场 + ingest 503 → 丢弃必须出声（warn+计数+session 汇总），且不抛错
+const r6 = await withMockShell(async (h2) => {
+	// 灌 3 条遥测（tool_execution_end→enqueue），攒不到 25 条批量线，靠 settled 兜底冲刷
+	for (const h of h2["tool_execution_end"]) await h({ toolCallId: "t1", toolName: "bash", isError: false });
+	await h2["agent_settled"][0]();
+	// 丢弃已有 warn 出声（noteDrop 立即报）；session_shutdown 汇总（flush 完再报账）
+	await h2["session_shutdown"][0]();
+	return true;
+}, {
+	"/telemetry/ingest": { status: 503, body: { error: "archive down" } },
+});
+console.log("loud drop with shell present (503, no throw):", r6 === true);
+
+// 7) 洞1另一半：拆卸态（壳不在场）flush 静默——不 warn 不计数不炸
+{
+	let warned = false;
+	const origWarn = console.warn;
+	console.warn = (...a) => { warned = true; origWarn(...a); };
+	try {
+		for (const h of hooks["tool_execution_end"]) await h({ toolCallId: "t2", toolName: "bash", isError: false });
+		await hooks["agent_settled"][0]();
+		await hooks["session_shutdown"][0]();
+	} finally {
+		console.warn = origWarn;
+	}
+	console.log("silent drop in dismantled state (no warn):", warned === false);
+}
+
+const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r6 === true];
+console.log("PASS " + checks.filter(Boolean).length + "/7");
