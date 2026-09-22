@@ -100,8 +100,9 @@ ${errBrief.join("\n") || "（无）"}
 2. 机械两维已经过阈——你要判的是它们判不了的：这个重复是「值得保留的判断被机械重复」还是「本可编译掉的搬运」？错误热点值得记的判据是「同类失败反复出现且没有既有 capability 接住」。
 3. 每个 candidate 必须能回答：编译掉的是什么判断、为何不心疼（JP 降权签名）、何时交回判断（适用条件/必须上浮的情形）。
 4. 你只有一个工具 pianist_bridge（action=payload 形如 {action:"grimoire_map", payload:{}}），只能读Grimoire的经图查重——已有 capability 直接复用，不重复提交。
-5. 产出格式：最后一个 message 必须是合法 JSON（其余解释文字放前面）：
-   {"verdict":"nothing"|"candidates", "candidates":[{"name":"...","tags":["..."],"body":"...","trigger":"...","boundary":"...","why":"..."}], "note":"一句话收工说明"}
+5. 健康检查：经图中无你产出过的资产则跳过（author=retropad-1 的条目为零时，健康问整段跳过，verdict 里的 health 填 "n/a"）。
+6. 产出格式：最后一个 message 必须是合法 JSON（其余解释文字放前面）：
+   {"verdict":"nothing"|"candidates", "health":"ok"|"n/a"|"issues:<一句话>", "candidates":[...], "note":"一句话收工说明"}
 
 现在开始。先查经图，再下裁决。`;
 
@@ -157,6 +158,9 @@ child.on("close", (code) => {
 	}
 
 	console.log(`[retropad] 分身裁决: ${verdict.verdict}${verdict.note ? ` —— ${verdict.note}` : ""}`);
+	// 洞2（洄洄 #708 裁决「占位」）：健康问答案先落账——n/a=经图无本分身产出资产（占位期常态），
+	// ok=有产出且都活着，issues:*=有产出且有坏账。占位期不设断言，第一本转正后答案开始有信息量。
+	console.log(`[retropad] 健康问: ${verdict.health ?? "(未填，占位期容忍)"}`);
 
 	if (verdict.verdict === "nothing") {
 		console.log(`[retropad] 本场没有值得记的——合法输出，收工`);
