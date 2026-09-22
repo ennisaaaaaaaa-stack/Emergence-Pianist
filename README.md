@@ -36,6 +36,7 @@ telemetry hooks ─▶ JSONL archive (v1) ─▶ hotspot scanner ─▶ retropad
 - **Cognitive waste is the one judged dimension** — a spawned reviewer agent ("retropad") sees only preprocessed hotspots (fingerprints + evidence pointers), and "nothing worth recording" is the expected majority output.
 - Candidates are born as drafts in a capability library — the nursery is not the registry.
 - **Teardown-tested**: with all self-learning components unplugged, a normal session and a cold-start injection run identically (verified 2026-09-21).
+- **Dismantled state is silent by design**: when the shell is absent (`PIANIST_SHELL_URL` unset), the telemetry hook drops events without logging — the removed organ doesn't cry pain, and the pain channel is part of the removed set. When the shell **is** present and ingest fails, every dropped batch is warned and counted, with a session-boundary summary (losing data must be loud, even though losing it never interrupts the session).
 
 ## Quick start
 
