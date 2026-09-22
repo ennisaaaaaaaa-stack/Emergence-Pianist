@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node test/pianist-ext-test.mjs && node test/l0-smoke.mjs && node test/l0-bridge-test.mjs && node test/telemetry-e2e-test.mjs && node test/hotspot-scanner-test.mjs",
+    "test": "node test/pianist-ext-test.mjs && node test/l0-smoke.mjs && node test/l0-bridge-test.mjs && node test/telemetry-e2e-test.mjs && node test/hotspot-scanner-test.mjs && node test/retropad-roster-test.mjs",
     "test:live": "node test/pianist-repeat.mjs && node test/pianist-fixloop.mjs"
   },
   "keywords": [],
