@@ -97,6 +97,8 @@ const r6 = await withMockShell(async (h2) => {
 console.log("loud drop with shell present (503, no throw):", r6 === true);
 
 // 7) 洞1另一半：拆卸态（壳不在场）flush 静默——不 warn 不计数不炸
+//    （洄洄 #738 钉子：结果并进 checks，静默合法也受门禁管）
+let silentOk = false;
 {
 	let warned = false;
 	const origWarn = console.warn;
@@ -108,8 +110,11 @@ console.log("loud drop with shell present (503, no throw):", r6 === true);
 	} finally {
 		console.warn = origWarn;
 	}
-	console.log("silent drop in dismantled state (no warn):", warned === false);
+	silentOk = warned === false;
+	console.log("silent drop in dismantled state (no warn):", silentOk);
 }
 
-const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r6 === true];
-console.log("PASS " + checks.filter(Boolean).length + "/7");
+const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r6 === true, silentOk];
+console.log("PASS " + checks.filter(Boolean).length + "/" + checks.length);
+// 门禁硬墙：红必须挡门（此前只 print 不 exit，全红也 exit 0，npm test 的 && 链拦不住）
+process.exit(checks.every(Boolean) ? 0 : 1);

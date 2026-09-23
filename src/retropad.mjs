@@ -193,6 +193,11 @@ child.on("close", (code) => {
 	}
 
 	console.log(`[retropad] 分身裁决: ${verdict.verdict}${verdict.note ? ` —— ${verdict.note}` : ""}`);
+	// 洞9（洄洄 #708 记账级）：裁决合法时 stderr 不再静默吞——有内容就落一行账（截 200 字），
+	// 不告警不中断（分身正常出裁决时 stderr 有杂音是常态），但暗区不留。
+	if (stderr.trim()) {
+		console.log(`[retropad] 分身 stderr 杂音（裁决已出，记账不告警）: ${stderr.trim().slice(0, 200)}`);
+	}
 	// 洞2（洄洄 #708 裁决「占位」）：健康问答案先落账——n/a=经图无本分身产出资产（占位期常态），
 	// ok=有产出且都活着，issues:*=有产出且有坏账。占位期不设断言，第一本转正后答案开始有信息量。
 	console.log(`[retropad] 健康问: ${verdict.health ?? "(未填，占位期容忍)"}`);

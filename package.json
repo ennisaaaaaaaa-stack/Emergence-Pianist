@@ -10,6 +10,9 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@sinclair/typebox": "0.34.52"
