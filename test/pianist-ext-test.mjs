@@ -2,6 +2,12 @@
 import http from "node:http";
 import { createJiti } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
 
+// 钉住测试前置环境：本仓开发机 ambient env 里飘着活壳 URL（如 …:8770）和别的 agent id
+// （如 pianist-dev-2），会把“无壳降级/账本 agent/桥占位”断言带偏，还会把测试遥测写进真壳。
+// AGENT_ID 在 extension 模块加载时读取，必须钉在首次 jiti.import 之前。
+process.env.PIANIST_AGENT_ID = "pianist-dev-1";
+delete process.env.PIANIST_SHELL_URL;
+
 const hooks = {};
 const tools = [];
 const entries = [];

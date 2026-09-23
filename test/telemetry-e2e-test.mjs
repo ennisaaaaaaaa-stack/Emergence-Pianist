@@ -16,6 +16,10 @@ import { createJiti } from "../node_modules/@earendil-works/pi-coding-agent/node
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pianist-tel-test-"));
 const received = [];
 
+// 钉住 agent id：环境里可能飘着别的 PIANIST_AGENT_ID（如本仓开发的 dev-2），
+// 不钉住则落盘文件名变成 pianist-dev-2-*.jsonl，下方断言全部读不到文件。
+process.env.PIANIST_AGENT_ID = "pianist-dev-1";
+
 // ---- 起 shell.mjs 真实例（PIANIST_TELEMETRY_DIR 指临时目录，端口随机）----
 const shellPort = 41880;
 process.env.PIANIST_TELEMETRY_DIR = tmpDir;
@@ -25,6 +29,9 @@ const shellProc = spawn("node", ["src/shell.mjs"], {
 	stdio: ["ignore", "pipe", "pipe"],
 	env: { ...process.env },
 });
+// 任何退出路径（中途断言崩溃 / uncaughtException / top-level await 拒绝 / 正常退出）都兜底杀壳，
+// 否则僵尸壳占住 41880，下一轮健康检查打到它造成假绿。kill() 对已退出进程是无害 no-op。
+process.on("exit", () => { try { shellProc.kill(); } catch {} });
 await new Promise((r) => setTimeout(r, 800)); // 等 listen
 const health = await (await fetch(`http://127.0.0.1:${shellPort}/health`)).json();
 console.log("shell up:", health.ok === true);
