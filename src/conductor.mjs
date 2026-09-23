@@ -129,10 +129,12 @@ function drawPart() {
 // env-event 牌面预取：svps wake_log 里 replay_day IS NULL 的实时行（未回放消费的）。
 // 失败出声降级为空牌面（拉不到队列 ≠ 队列为空）——session 照拉，牌面标明降级原因。
 // 消费进度记在 conductor 自己的 state（last_env_event_id），不碰 wake_log（INSERT-only 界约）。
+// 队列语义（洄#755 钉a 裁定 ASC）：每轮吃最老的 5 条，积压靠后续轮次续消——
+// 不会静默跳过任何一条；DESC+max 是快照语义，与「消费进度」的承诺不符。
 async function fetchEnvEvents(lastId) {
 	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "svps";
 	// -json 输出：多行 signal_text 不会被管道分隔符拆断（默认 list 模式会）
-	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM wake_log WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id DESC LIMIT 5`;
+	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM wake_log WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
 	const { execFile } = await import("node:child_process");
 	return new Promise((resolve) => {
 		execFile("ssh", [SSH, `sqlite3 -json ~/memory/mcp_memory.db "${q}"`], { timeout: 20_000 }, (err, stdout) => {
@@ -217,6 +219,10 @@ async function tick() {
 	console.log(`[conductor] 拉起 ${part.id} ...`);
 	const r = await launchPart({ ...part, prompt });
 	const maxEventId = events && events.length ? Math.max(...events.map((e) => e.id)) : null;
+	if (events && events.length === 5) {
+		// 吃满一轮（ASC LIMIT 5）说明后面可能还有积压——出声，不装消费完
+		console.warn(`[conductor] env-event 本轮吃满 5 条（至 #${maxEventId}）——队列可能仍有积压，靠后续轮次续消`);
+	}
 	st.days[today].launches += 1;
 	st.launches.push({ day: today, part: part.id, ts: new Date().toISOString(), exit: r.code, events: maxEventId });
 	if (st.launches.length > 200) st.launches.shift();
