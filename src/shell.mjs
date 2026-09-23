@@ -18,6 +18,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { ApprovalQueue, NotifyRing, WriteQueue, classify } from "./queue-core.mjs";
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -267,6 +268,51 @@ function telemetryAppend(events) {
 }
 
 // ---------------------------------------------------------------------------
+// 队列（施工④）：审批队列 + 写队列 + 通知环
+// ---------------------------------------------------------------------------
+
+const APPROVAL_MODE = process.env.PIANIST_APPROVAL_MODE ?? "queue"; // queue | auto
+const AUDIT_FILE = process.env.PIANIST_AUDIT_FILE ?? path.resolve("data/approval-audit.jsonl");
+
+const approvals = new ApprovalQueue(AUDIT_FILE);
+const notifyRing = new NotifyRing(200);
+const writeQueue = new WriteQueue();
+
+/** 写 key：Grimoire 按库、spoor 按域（workbench/archive/scratchpad）——粗粒度避免锁竞争 */
+function writeKey(action) {
+	if (action.startsWith("grimoire_")) return "grimoire";
+	if (action.startsWith("spoor_")) return `spoor:${action.slice(6, action.indexOf("_", 6))}`;
+	return action;
+}
+
+/**
+ * 队列化 invoke：amber/silent 照走（写面串行化），red 挂起进审批队列。
+ * 返回 { deferred: true, approval } 或原结果。
+ */
+async function queuedInvoke(action, args, agentId, intent) {
+	const tier = classify(action, args);
+	if (tier === "red") {
+		if (APPROVAL_MODE === "auto") {
+			// 演示/测试档：自动放行，但审计必须记——暗区不许无痕
+			const item = approvals.request(action, args, agentId, intent);
+			approvals.auditAuto(item, APPROVAL_MODE);
+			const out = await writeQueue.run(writeKey(action), () => invokeTool(action, args, agentId));
+			item.result = out?.error ? `error: ${out.error}` : "ok";
+			return out;
+		}
+		const item = approvals.request(action, args, agentId, intent);
+		return { deferred: true, approval: item };
+	}
+	if (tier === "amber") {
+		const out = await writeQueue.run(writeKey(action), () => invokeTool(action, args, agentId));
+		notifyRing.push(action, args, agentId, intent);
+		return out;
+	}
+	// silent：读面直接走（写面罕见，不进队列）
+	return invokeTool(action, args, agentId);
+}
+
+// ---------------------------------------------------------------------------
 // /tools/invoke 统一入口
 // ---------------------------------------------------------------------------
 
@@ -312,17 +358,70 @@ const server = http.createServer(async (req, res) => {
 		const parsed = safeJsonParse(body);
 		if (!parsed || typeof parsed.action !== "string") {
 			res.writeHead(400, { "content-type": "application/json" });
-			res.end(JSON.stringify({ error: "body 需为 { action, payload?, agent? }" }));
+			res.end(JSON.stringify({ error: "body 需为 { action, payload?, agent?, intent? }" }));
 			return;
 		}
 		try {
-			const out = await invokeTool(parsed.action, parsed.payload ?? parsed.args, parsed.agent);
+			const out = await queuedInvoke(parsed.action, parsed.payload ?? parsed.args, parsed.agent, parsed.intent);
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify(out));
 		} catch (err) {
 			res.writeHead(502, { "content-type": "application/json" });
 			res.end(JSON.stringify({ error: String(err?.message ?? err) }));
 		}
+		return;
+	}
+	if (req.method === "GET" && u.pathname === "/approvals/pending") {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ pending: approvals.pending() }));
+		return;
+	}
+	if (req.method === "GET" && u.pathname === "/approvals/get") {
+		const id = u.searchParams.get("id");
+		const item = id ? approvals.get(id) : null;
+		res.writeHead(item ? 200 : 404, { "content-type": "application/json" });
+		res.end(JSON.stringify(item ?? { error: `approval ${id} 不存在` }));
+		return;
+	}
+	if (req.method === "POST" && u.pathname === "/approvals/decide") {
+		const chunks = [];
+		for await (const c of req) chunks.push(c);
+		const parsed = safeJsonParse(Buffer.concat(chunks).toString("utf8"));
+		if (!parsed?.id || typeof parsed.approve !== "boolean") {
+			res.writeHead(400, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: "body 需为 { id, approve: boolean, by?, note? }" }));
+			return;
+		}
+		const decided = approvals.decide(parsed.id, parsed.approve, parsed.by, parsed.note);
+		if (!decided) {
+			res.writeHead(409, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: `approval ${parsed.id} 不存在或已裁决` }));
+			return;
+		}
+		// 批准后执行面：壳代跑（写队列），执行结果回填卡片
+		if (parsed.approve) {
+			try {
+				const { action, payload } = decided.raw;
+				const out = await writeQueue.run(writeKey(action), () => invokeTool(action, payload, decided.agent));
+				decided.result = out?.error ? `error: ${out.error}` : "ok";
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify(decided));
+				return;
+			} catch (err) {
+				decided.result = `error: ${String(err?.message ?? err)}`;
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify(decided));
+				return;
+			}
+		}
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify(decided));
+		return;
+	}
+	if (req.method === "GET" && u.pathname === "/notify/since") {
+		const lastId = u.searchParams.get("after");
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ notifications: notifyRing.since(lastId) }));
 		return;
 	}
 	if (req.method === "POST" && u.pathname === "/telemetry/ingest") {
