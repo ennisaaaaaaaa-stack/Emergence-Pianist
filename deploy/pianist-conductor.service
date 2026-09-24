@@ -1,0 +1,23 @@
+# pianist-conductor — §三抽卡制常驻服务（施工③编排闭环第二铲）。
+# 姿势照 tideline-orchestrator.service 先例（本机 WSL systemd 实证可用）。
+# 纪律：key 不进 unit——EnvironmentFile 指 /etc/pianist/conductor.env（repo 外，600，install-conductor.sh 生成）。
+# node 走绝对路径（NODE_BIN）：服务 PATH 不带 nvm/home 装配，19连抽钉子同款防版本错位。
+
+[Unit]
+Description=Pianist conductor (idle draw -> pi session, budget-capped)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=REPO_HOME
+EnvironmentFile=/etc/pianist/conductor.env
+ExecStart=NODE_BIN REPO_HOME/src/conductor.mjs
+# 崩了自动拉起；30s 缓冲防 tight-loop 重启风暴
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pianist-conductor
+
+[Install]
+WantedBy=multi-user.target

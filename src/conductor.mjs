@@ -320,6 +320,9 @@ async function main() {
 	}
 	if (ONCE) { await tick(); return; }
 	console.log(`[conductor] 常驻启动：idle>${IDLE_MS / 60000}min tick=${TICK_MS / 1000}s budget=${DAILY_BUDGET} 元/日(JST) parts=${PARTS.length} node=${process.execPath} ${process.version}（19连抽事故的钉子：版本错位第一跳出声，不用验尸）`);
+	// SIGTERM 钩子（施工③常驻化，systemd stop 卫生）：默认死法也能停，但 journal 留 signal 尸检——
+	// 收工一行再 exit 0，重启/停止的账目干净。仅此 2 行，不碰循环逻辑。
+	process.on("SIGTERM", () => { console.log("[conductor] SIGTERM——收工退出（systemd stop）"); process.exit(0); });
 	while (true) {
 		try { await tick(); } catch (e) { console.warn(`[conductor] tick 异常（不中断）：${e?.message ?? e}`); }
 		await new Promise((r) => setTimeout(r, TICK_MS));

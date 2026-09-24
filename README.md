@@ -63,6 +63,16 @@ Sandboxed execution, first cut (施工⑤): `src/sandbox.mjs` ships `SandboxMana
 
 Scope of this cut: container engine only — `microvm` is a reserved discriminated-union slot that throws "not implemented in this iteration"; shell wiring (`/sandbox` routes) lands in the next cut. Zero-credential rule: nothing from the host environment (keys included) is ever injected into a sandbox — credentials live only on the host. Tests: `node --test test/sandbox-engine-test.mjs` (needs a local docker daemon; not part of `npm test`).
 
+## Conductor (resident)
+
+The conductor runs as a systemd service (`Restart=on-failure`, budget gate 2 yen/JST-day as backstop; keys live only in `/etc/pianist/conductor.env`, mode 600, outside the repo):
+
+```bash
+bash deploy/install-conductor.sh              # install/upgrade (idempotent; --dry-run previews; takes ZAI_CODING_CN_API_KEY from current env)
+systemctl disable --now pianist-conductor && rm /etc/systemd/system/pianist-conductor.service /etc/pianist/conductor.env && systemctl daemon-reload  # uninstall
+systemctl is-active pianist-conductor && node src/conductor.mjs --status  # check status (is-active + today's spend/draws as JSON)
+```
+
 ## Status
 
 Discovery loop shipped (telemetry → scanner → retropad → drafts) and teardown-tested. The candidate lifecycle (shadow / promote / reject, due budgets, exam fields) is not built yet — this repo tracks the first half of the loop only.
