@@ -57,6 +57,12 @@ npm test          # 5 suites, deterministic, no API key needed
 npm run test:live # real-model end-to-end (spends tokens, manual)
 ```
 
+## Sandbox
+
+Sandboxed execution, first cut (施工⑤): `src/sandbox.mjs` ships `SandboxManager` — an 8-method, SWE-ReX-shaped contract (sessions / one-shot `execute` / files / lifecycle) over a hardened container engine: one session = one docker container (`--cap-drop ALL`, `no-new-privileges`, non-root with host-uid alignment, 512m / 1 cpu / 256 pids caps, zero port publishing, `pianist-sandbox=1` owner label, `docker rm -f` on close). Contract souls: errors cross boundaries with their class path (`__type`) and revive into real types; `X-Request-ID` makes retries idempotent; sessions live in the manager process, so a dropped connection never kills a running command.
+
+Scope of this cut: container engine only — `microvm` is a reserved discriminated-union slot that throws "not implemented in this iteration"; shell wiring (`/sandbox` routes) lands in the next cut. Zero-credential rule: nothing from the host environment (keys included) is ever injected into a sandbox — credentials live only on the host. Tests: `node --test test/sandbox-engine-test.mjs` (needs a local docker daemon; not part of `npm test`).
+
 ## Status
 
 Discovery loop shipped (telemetry → scanner → retropad → drafts) and teardown-tested. The candidate lifecycle (shadow / promote / reject, due budgets, exam fields) is not built yet — this repo tracks the first half of the loop only.
