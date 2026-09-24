@@ -85,7 +85,7 @@ const errBrief = errorHotspots.map((e, i) => {
 });
 
 // ---------------------------------------------------------------------------
-// draft 近亲名单（洞4，collaborator-B #708 裁决「输入侧补，补的是名字不是名录」）：
+// draft 近亲名单（洞4，collaborator A #708 裁决「输入侧补，补的是名字不是名录」）：
 // 经图不动、409 不动、巡山兜底不动——只在分身输入侧给 draft 一行名录。
 // 数据源 = Grimoire /darkzone（draft 从未被 push/expand，天然在暗区名单里，[layer/status] 可过滤）。
 // 失败必须出声降级：拉不到名单 ≠ 名单为空，蒙眼判案比瞎猜近亲更糟的是「以为没有近亲」。
@@ -111,7 +111,7 @@ try {
 	console.warn(`[retropad] draft 名单拉取失败——分身将看不到近亲（查重照做，但 409 挡不住的近亲这轮防不了）：${e.message}`);
 }
 
-/** 洞4 缩写（collaborator-B #708：「数量+名字缩写（首词+hash前4）」）：hash 前缀用名字首词的确定性短哈希 */
+/** 洞4 缩写（collaborator A #708：「数量+名字缩写（首词+hash前4）」）：hash 前缀用名字首词的确定性短哈希 */
 function abbreviate(name) {
 	let h = 0;
 	for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -193,12 +193,12 @@ child.on("close", (code) => {
 	}
 
 	console.log(`[retropad] 分身裁决: ${verdict.verdict}${verdict.note ? ` —— ${verdict.note}` : ""}`);
-	// 洞9（collaborator-B #708 记账级）：裁决合法时 stderr 不再静默吞——有内容就落一行账（截 200 字），
+	// 洞9（collaborator A #708 记账级）：裁决合法时 stderr 不再静默吞——有内容就落一行账（截 200 字），
 	// 不告警不中断（分身正常出裁决时 stderr 有杂音是常态），但暗区不留。
 	if (stderr.trim()) {
 		console.log(`[retropad] 分身 stderr 杂音（裁决已出，记账不告警）: ${stderr.trim().slice(0, 200)}`);
 	}
-	// 洞2（collaborator-B #708 裁决「占位」）：健康问答案先落账——n/a=经图无本分身产出资产（占位期常态），
+	// 洞2（collaborator A #708 裁决「占位」）：健康问答案先落账——n/a=经图无本分身产出资产（占位期常态），
 	// ok=有产出且都活着，issues:*=有产出且有坏账。占位期不设断言，第一本转正后答案开始有信息量。
 	console.log(`[retropad] 健康问: ${verdict.health ?? "(未填，占位期容忍)"}`);
 

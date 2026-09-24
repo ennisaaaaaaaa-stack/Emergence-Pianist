@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // conductor — §三抽卡制地基（2026-09-24）。空闲>30min→等概率抽part→拉起pi session。
-// 裁定（collaborator-B issue#752）：独立进程不碰壳；对event-queue只读不写；只做§九环境事件消费层。
+// 裁定（collab-issue）：独立进程不碰壳；对event-queue只读不写；只做§九环境事件消费层。
 // 预算：当日(JST)遥测cost.total之和≥上限→当天硬停。
 // 用法：常驻 / --once / --once --dry-run / --status
 import fs from "node:fs";
@@ -151,7 +151,7 @@ function drawPart() {
 // env-event 牌面预取：the-remote event-queue 里 replay_day IS NULL 的实时行（未回放消费的）。
 // 失败出声降级为空牌面（拉不到队列 ≠ 队列为空）——session 照拉，牌面标明降级原因。
 // 消费进度记在 conductor 自己的 state（last_env_event_id），不碰 event-queue（INSERT-only 界约）。
-// 队列语义（collaborator-B issue#755 钉a 裁定 ASC）：每轮吃最老的 5 条，积压靠后续轮次续消——
+// 队列语义（collab-issue 钉a 裁定 ASC）：每轮吃最老的 5 条，积压靠后续轮次续消——
 // 不会静默跳过任何一条；DESC+max 是快照语义，与「消费进度」的承诺不符。
 async function fetchEnvEvents(lastId) {
 	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "the-remote";
@@ -175,13 +175,13 @@ async function fetchEnvEvents(lastId) {
 	});
 }
 
-// todo-review 牌面预取：本地 Stigmergy workbench 各项目 STATUS.md 的「下一步」段。
-// 三件套判断占在 prompt 不在逻辑（洞2刀法，collaborator-B issue#769/#771 认的形状）——这里只供牌面：
+// todo-review 牌面预取：本地 the-workbench workbench 各项目 STATUS.md 的「下一步」段。
+// 三件套判断占在 prompt 不在逻辑（洞2刀法，collab-issue/#771 认的形状）——这里只供牌面：
 // 抽条目原文+标是否条目格式（T<id> [归属] …｜出处｜判据：…），够不够格由 session 按提示词裁。
 // 细则（the-remote:2026-09-25-spoor-session准入细则-草稿.md）拍板落地那天只换判据不动骨架。
 // 读不到=降级 null（拉不到清单≠清单为空）；空段=[]=真无债可审。
 function fetchTodoBoard() {
-	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "Stigmergy");
+	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "the-workbench");
 	const wb = path.join(root, "workbench");
 	const lines = [];
 	let projects = 0;

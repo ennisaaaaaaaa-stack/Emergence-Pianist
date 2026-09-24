@@ -18,7 +18,7 @@ UNIT_SRC="$REPO_ROOT/deploy/pianist-conductor.service"
 ENV_FILE="${CONDUCTOR_ENV_FILE:-/etc/pianist/conductor.env}"
 UNIT_DEST_DIR="${CONDUCTOR_UNIT_DEST:-/etc/systemd/system}"
 UNIT_DEST="$UNIT_DEST_DIR/pianist-conductor.service"
-NODE_BIN="${CONDUCTOR_NODE_BIN:-NODE_BIN}"
+NODE_BIN="${CONDUCTOR_NODE_BIN:-$(command -v node)}"
 SYSTEMCTL="${CONDUCTOR_SYSTEMCTL:-systemctl}"
 
 say() { echo "[install-conductor] $*"; }
@@ -52,7 +52,12 @@ fi
 
 # ---- 2. unit 生效 ----
 run mkdir -p "$UNIT_DEST_DIR" # 真路径 /etc/systemd/system 本就存在；旁路/异机部署不依赖这个假设
-run cp "$UNIT_SRC" "$UNIT_DEST"
+# 模板展开落地：__REPO_HOME__/__NODE_BIN__ 替换为部署时真值（dry-run 只打印计划）
+if (( DRY )); then
+	say "[dry-run] sed -e s|__REPO_HOME__|$REPO_ROOT|g -e s|__NODE_BIN__|$NODE_BIN|g $UNIT_SRC > $UNIT_DEST"
+else
+	sed -e "s|__REPO_HOME__|$REPO_ROOT|g" -e "s|__NODE_BIN__|$NODE_BIN|g" "$UNIT_SRC" > "$UNIT_DEST"
+fi
 run "$SYSTEMCTL" daemon-reload
 run "$SYSTEMCTL" enable pianist-conductor
 run "$SYSTEMCTL" restart pianist-conductor
