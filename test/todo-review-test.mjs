@@ -22,9 +22,9 @@ fs.writeFileSync(path.join(tmp, "workbench", "proj-a", "STATUS.md"), [
 	"## 做到哪",
 	"打底",
 	"## 下一步",
-	"> 排序确认：2026-09-19（甜心）·确认至第1条",
-	"- T12 [洄] 修六轨器乐误判 ｜协商9/19「装完music box先复测再修」｜判据：六轨复测全对",
-	"- T13 [甜心] Orbi口径三题 ｜派单9/18「材料提前一周拿到」｜判据：口径表入库",
+	"> 排序确认：2026-09-19（the user）·确认至第1条",
+	"- T12 [collaborator-A] 修六轨器乐误判 ｜协商9/19「装完music box先复测再修」｜判据：六轨复测全对",
+	"- T13 [the user] Orbi口径三题 ｜派单9/18「材料提前一周拿到」｜判据：口径表入库",
 	"## 卡在哪",
 	"- 无",
 ].join("\n"));
@@ -38,7 +38,7 @@ fs.mkdirSync(path.join(tmp, "workbench", "proj-c"), { recursive: true }); // 无
 fs.writeFileSync(path.join(tmp, "workbench", "unrelated.txt"), "junk");
 
 const envA = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: tmp, CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmp, "state"), CONDUCTOR_IDLE_NOW: "1" };
-const outA = execFileSync("NODE_BIN", [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envA, encoding: "utf8" });
+const outA = execFileSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envA, encoding: "utf8" });
 check("场景A：抽到 todo-review 且牌面行数=3（2条目+1旧格式）", outA.includes("todo-review") && outA.includes("牌面 3 行/2 项目"), outA.trim().split("\n").pop());
 
 // dry-run 不落 state——prompt 细节用子进程再验：直接跑一次非 dry 拉起太贵，改验 prompt 生成函数可从 stdout 断言的部分已够；
@@ -51,18 +51,18 @@ const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), "todo-review-empty-"));
 fs.mkdirSync(path.join(tmpB, "workbench", "proj-x"), { recursive: true });
 fs.writeFileSync(path.join(tmpB, "workbench", "proj-x", "STATUS.md"), "# STATUS\n## 下一步\n\n## 卡在哪\n- 无\n");
 const envB = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: tmpB, CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmpB, "state"), CONDUCTOR_IDLE_NOW: "1" };
-const outB = execFileSync("NODE_BIN", [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envB, encoding: "utf8" });
+const outB = execFileSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envB, encoding: "utf8" });
 check("场景B：空段=真无债（0 行但不是降级）", outB.includes("牌面 0 行/1 项目"), outB.trim().split("\n").pop());
 
 // ---- 场景C：workbench 根不存在——降级 null 出声 ----
 const tmpC = fs.mkdtempSync(path.join(os.tmpdir(), "todo-review-degraded-"));
 const envC = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: path.join(tmpC, "no-such-root"), CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmpC, "state"), CONDUCTOR_IDLE_NOW: "1" };
-const runC = spawnSync("NODE_BIN", [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envC, encoding: "utf8" });
+const runC = spawnSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envC, encoding: "utf8" });
 const outC = runC.stdout + "\n" + runC.stderr; // 降级 warn 在 stderr——必须并流才看得见
 check("场景C：不可读=降级出声（拉不到≠没有）", outC.includes("todo-review 牌面预取失败") && outC.includes("预取失败降级"), outC.trim().split("\n").filter((l) => l.includes("抽卡"))[0]);
 
-// ---- 场景D：node 版本自白进启动日志（19连抽钉子，洄#771）----
-const outD = execFileSync("NODE_BIN", [path.join(CWD, "src", "conductor.mjs"), "--status"], { env: envA, encoding: "utf8" });
+// ---- 场景D：node 版本自白进启动日志（19连抽钉子，collab-issue）----
+const outD = execFileSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--status"], { env: envA, encoding: "utf8" });
 check("场景D：启动日志含 node 版本自白（--status 路径不走常驻行，结构面断言源码）", src.includes("19连抽事故的钉子") && src.includes("node=${process.execPath}"), "");
 
 console.log(`\n${pass}/${total}`);

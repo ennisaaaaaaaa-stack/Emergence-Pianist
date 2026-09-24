@@ -1,4 +1,4 @@
-// 洞4（洄洄 #708 裁决「输入侧补，补的是名字不是名录」）：draft 近亲名单进分身 prompt。
+// 洞4（collaborator A #708 裁决「输入侧补，补的是名字不是名录」）：draft 近亲名单进分身 prompt。
 // 本测试不拉真分身（key 不在环境也能跑）——单独验证 retropad 的名单提取/缩写/降级三件事：
 //   1) darkzone 返回文本里的 draft 行被正确过滤+缩写（首词+确定性hash前4）
 //   2) 非 draft 行（verified/canon 等）不进名单

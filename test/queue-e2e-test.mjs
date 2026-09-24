@@ -65,7 +65,7 @@ check("classify: grimoire_map → silent", classify("grimoire_map", {}) === "sil
 
 // ---- 2) 人话层 ----
 const d = describe("grimoire_submit", { name: "test" }, "把今晚的坑记成书");
-check("describe 人话+自述", d.includes("山海") && d.includes("自述：把今晚的坑记成书"));
+check("describe 人话+自述", d.includes("Grimoire") && d.includes("自述：把今晚的坑记成书"));
 const bi = impactOf("bash", { command: "rm -rf /data" });
 check("impactOf 不可逆标注", bi.includes("删了就没了"));
 
@@ -75,7 +75,7 @@ const r1 = await (await fetch(`${shellUrl}/tools/invoke`, {
 	body: JSON.stringify({ action: "grimoire_submit", agent: "pianist-dev-1", intent: "测试投书", payload: { name: "test-skill" } }),
 })).json();
 check("red deferred", r1.deferred === true && typeof r1.approval?.id === "string");
-check("卡片有人话", typeof r1.approval?.summary === "string" && r1.approval.summary.includes("山海"));
+check("卡片有人话", typeof r1.approval?.summary === "string" && r1.approval.summary.includes("Grimoire"));
 check("red 未执行（mock 零请求）", grimoirePosts.length === 0);
 
 // ---- 4) pending + deny + 幂等 ----

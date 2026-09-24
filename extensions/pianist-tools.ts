@@ -182,7 +182,7 @@ function wireTelemetry(pi: ExtensionAPI) {
 		if (buffer.length >= TELEMETRY_BATCH) void flush();
 	}
 
-	// 洞1台账（洄洄 #708 裁决）：壳在场时 ingest 失败的丢弃必须出声——出声≠中断，
+	// 洞1台账（collaborator A #708 裁决）：壳在场时 ingest 失败的丢弃必须出声——出声≠中断，
 	// 丢弃行为不变（旁挂坏了变慢不变哑），但暗区不许无痕。拆卸态静默合法（取舍见 README）。
 	let dropped = { batches: 0, events: 0, firstTs: null as string | null, lastReason: null as string | null };
 

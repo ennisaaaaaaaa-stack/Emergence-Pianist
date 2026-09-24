@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // conductor — §三抽卡制地基（2026-09-24）。空闲>30min→等概率抽part→拉起pi session。
-// 裁定（洄#752）：独立进程不碰壳；对wake_log只读不写；只做§九环境事件消费层。
+// 裁定（collab-issue）：独立进程不碰壳；对event-queue只读不写；只做§九环境事件消费层。
 // 预算：当日(JST)遥测cost.total之和≥上限→当天硬停。
 // 用法：常驻 / --once / --once --dry-run / --status
 import fs from "node:fs";
@@ -77,23 +77,23 @@ const PARTS_ALL = [
 	},
 	{
 		id: "env-event",
-		desc: "§九环境事件消费（wake_log 慢通道）",
+		desc: "§九环境事件消费（event-queue 慢通道）",
 		// 牌面由 conductor 拉起前注入（events 参数）；队列不可达时降级为空牌面确认跑
 		prompt: (events) => [
-			"你是 Emergence Pianist 的环境事件分身（env-event part）。慢通道轮到你了：wake_log 里有实时环境唤起在排队，你的任务是消费这一批。",
+			"你是 Emergence Pianist 的环境事件分身（env-event part）。慢通道轮到你了：event-queue 里有实时环境唤起在排队，你的任务是消费这一批。",
 			"",
 			"本轮牌面（conductor 预取，含 thread_id/cosine/信号摘录）：",
 			events && events.length
 				? events.map((e) => `- #${e.thread_id} cos=${e.cosine} [${e.signal_source}] ${e.signal_text.slice(0, 80).replace(/\n/g, " ")} (${e.logged_at})`).join("\n")
 				: "（队列不可达或无新事件——本轮降级为空牌面确认跑，写 100 字以内的收尾笔记即可）",
 			"",
-			"逐条判断：这条环境信号对琴师们最近的活动有没有实质关联——没有就明说「这条不接」；有关联的，把判断写进收尾笔记（200字以内）。",
-			"纪律：只消费不动账——wake_log 你只读不写；单 session 预算内闭环。",
+			"逐条判断：这条环境信号对pianist们最近的活动有没有实质关联——没有就明说「这条不接」；有关联的，把判断写进收尾笔记（200字以内）。",
+			"纪律：只消费不动账——event-queue 你只读不写；单 session 预算内闭环。",
 		].join("\n"),
 	},
 	{
 		id: "todo-review",
-		desc: "§八 session spoor 第一铲：to do 三件套过滤（准入细则待甜心拍板，判据占位在 prompt）",
+		desc: "§八 session spoor 第一铲：to do 三件套过滤（准入细则待the user拍板，判据占位在 prompt）",
 		// 牌面由 conductor 拉起前注入（board 参数）；workbench 读不到时降级为空牌面确认跑
 		prompt: (board) => [
 			"你是 Emergence Pianist 的待办对账分身（todo-review part）。这条产线是蓝图 §八 session spoor 的第一铲：家里各项目 STATUS.md 的「下一步」段攒了债，你来按准入三件套过一遍筛。",
@@ -148,15 +148,15 @@ function drawPart() {
 	return PARTS[Math.floor(Math.random() * PARTS.length)];
 }
 
-// env-event 牌面预取：svps wake_log 里 replay_day IS NULL 的实时行（未回放消费的）。
+// env-event 牌面预取：the-remote event-queue 里 replay_day IS NULL 的实时行（未回放消费的）。
 // 失败出声降级为空牌面（拉不到队列 ≠ 队列为空）——session 照拉，牌面标明降级原因。
-// 消费进度记在 conductor 自己的 state（last_env_event_id），不碰 wake_log（INSERT-only 界约）。
-// 队列语义（洄#755 钉a 裁定 ASC）：每轮吃最老的 5 条，积压靠后续轮次续消——
+// 消费进度记在 conductor 自己的 state（last_env_event_id），不碰 event-queue（INSERT-only 界约）。
+// 队列语义（collab-issue 钉a 裁定 ASC）：每轮吃最老的 5 条，积压靠后续轮次续消——
 // 不会静默跳过任何一条；DESC+max 是快照语义，与「消费进度」的承诺不符。
 async function fetchEnvEvents(lastId) {
-	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "svps";
+	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "the-remote";
 	// -json 输出：多行 signal_text 不会被管道分隔符拆断（默认 list 模式会）
-	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM wake_log WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
+	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM event-queue WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
 	const { execFile } = await import("node:child_process");
 	return new Promise((resolve) => {
 		execFile("ssh", [SSH, `sqlite3 -json ~/memory/mcp_memory.db "${q}"`], { timeout: 20_000 }, (err, stdout) => {
@@ -175,13 +175,13 @@ async function fetchEnvEvents(lastId) {
 	});
 }
 
-// todo-review 牌面预取：本地 Stigmergy workbench 各项目 STATUS.md 的「下一步」段。
-// 三件套判断占在 prompt 不在逻辑（洞2刀法，洄#769/#771 认的形状）——这里只供牌面：
+// todo-review 牌面预取：本地 the-workbench workbench 各项目 STATUS.md 的「下一步」段。
+// 三件套判断占在 prompt 不在逻辑（洞2刀法，collab-issue/#771 认的形状）——这里只供牌面：
 // 抽条目原文+标是否条目格式（T<id> [归属] …｜出处｜判据：…），够不够格由 session 按提示词裁。
-// 细则（svps:2026-09-25-spoor-session准入细则-草稿.md）拍板落地那天只换判据不动骨架。
+// 细则（the-remote:2026-09-25-spoor-session准入细则-草稿.md）拍板落地那天只换判据不动骨架。
 // 读不到=降级 null（拉不到清单≠清单为空）；空段=[]=真无债可审。
 function fetchTodoBoard() {
-	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "Stigmergy");
+	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "the-workbench");
 	const wb = path.join(root, "workbench");
 	const lines = [];
 	let projects = 0;
@@ -295,7 +295,7 @@ async function tick() {
 	st.days[today].launches += 1;
 	st.launches.push({ day: today, part: part.id, ts: new Date().toISOString(), exit: r.code, events: maxEventId });
 	if (st.launches.length > 200) st.launches.shift();
-	// 消费进度推进：只记 conductor 自己的 state，不碰 wake_log（只读界约）
+	// 消费进度推进：只记 conductor 自己的 state，不碰 event-queue（只读界约）
 	if (maxEventId !== null) st.last_env_event_id = maxEventId;
 	saveState(st);
 	if (r.code !== 0) {

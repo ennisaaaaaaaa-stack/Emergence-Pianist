@@ -103,7 +103,7 @@ const r6 = await withMockShell(async (h2) => {
 console.log("loud drop with shell present (503, no throw):", r6 === true);
 
 // 7) 洞1另一半：拆卸态（壳不在场）flush 静默——不 warn 不计数不炸
-//    （洄洄 #738 钉子：结果并进 checks，静默合法也受门禁管）
+//    （collaborator A #738 钉子：结果并进 checks，静默合法也受门禁管）
 let silentOk = false;
 {
 	let warned = false;

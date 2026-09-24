@@ -4,13 +4,13 @@
  * 铁律继承：壳永不直接调 LLM API——「自然语言描述」是规则模板+调用方自述，
  * 不烧 token；要更细的意图解释属于 ⑥（spawn 真 Pi 进程）的活。
  *
- * 1. 审批队列（人类视线三层，甜心 9/23）：
+ * 1. 审批队列（人类视线三层，the user 9/23）：
  *    red（必问：挂起等人类批准，不批不动）/ amber（通知：立即执行，留人类可读通知）
  *    / 其余（静默放行）。决定权只在人类 HTTP 侧——bridge 只给查询面，不给批准面。
  * 2. 写队列（铁律4「并发写走壳层写队列；别让慢的堵快的」）：
  *    同 key 串行、异 key 并行。
  *
- * 设计依据：arch-v2 铁律节 / pianist-runtime-dependency-map v4 待办 / 甜心 9/23 桌面端决策
+ * 设计依据：arch-v2 铁律节 / pianist-runtime-dependency-map v4 待办 / the user 9/23 桌面端决策
  */
 
 import fs from "node:fs";
@@ -49,7 +49,7 @@ const BASH_AMBER_RES = [
 /** 工具级风险表：在表 = 写操作（进写队列），值 = 视线层 */
 const ACTION_RISK = {
 	// Grimoire 写面
-	grimoire_submit: "red", // 投山海 = 进公开库的写
+	grimoire_submit: "red", // 投Grimoire = 进公开库的写
 	grimoire_event: "amber", // 记事件 = 本地账本追加
 	// spoor 工作台写面
 	spoor_journal: "amber",
@@ -77,12 +77,12 @@ export function classify(action, payload) {
 }
 
 // ---------------------------------------------------------------------------
-// 自然语言层（甜心 9/23：审批要说人话，黑话用户看不懂）
+// 自然语言层（the user 9/23：审批要说人话，黑话用户看不懂）
 // ---------------------------------------------------------------------------
 
 const ACTION_HUMAN = {
-	grimoire_submit: "往山海提交一本新 skill 书",
-	grimoire_event: "往山海事件账本追加一条记录",
+	grimoire_submit: "往Grimoire提交一本新 skill 书",
+	grimoire_event: "往Grimoire事件账本追加一条记录",
 	spoor_journal: "往猎迹工作台追加一条工作记录",
 	spoor_snippet: "在猎迹工作台存一段复用代码",
 	spoor_status: "刷新猎迹项目的进行中状态板",

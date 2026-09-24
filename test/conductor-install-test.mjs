@@ -21,7 +21,12 @@ check("unit：EnvironmentFile 指向 /etc/pianist/conductor.env（repo 外）", 
 check("unit：不含任何 key 名/值（连名字都不该出现，注入只走 EnvironmentFile）", !/ZAI|API_KEY|TOKEN|SECRET|sk-|Bearer/i.test(unit));
 
 // ---- 2. systemd-analyze verify（只读语法校验；env 文件此时可以不存在——verify 不查其存在性） ----
-const ver = spawnSync("systemd-analyze", ["verify", UNIT], { encoding: "utf8" });
+// 模板占位符先展开再 verify（systemd 要求绝对路径；真实路径由 install 脚本展开）
+const unitExpanded = unit.replaceAll("__REPO_HOME__", CWD).replaceAll("__NODE_BIN__", spawnSync("bash", ["-c", "command -v node"], { encoding: "utf8" }).stdout.trim());
+const tmpUnitVerify = path.join(os.tmpdir(), "pianist-conductor-verify.service");
+fs.writeFileSync(tmpUnitVerify, unitExpanded);
+const ver = spawnSync("systemd-analyze", ["verify", tmpUnitVerify], { encoding: "utf8" });
+fs.rmSync(tmpUnitVerify, { force: true });
 check("systemd-analyze verify 通过（exit=0）", ver.status === 0, ((ver.stdout || "") + (ver.stderr || "")).trim().slice(0, 200));
 
 // ---- 3. install 脚本：bash -n 语法 + 缺 key 大声死（不装哑巴） ----
@@ -37,7 +42,7 @@ const tmpEnv = path.join(tmp, "pianist", "conductor.env");
 const tmpUnitDir = path.join(tmp, "systemd");
 const over = { ...process.env, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: tmpEnv, CONDUCTOR_UNIT_DEST: tmpUnitDir, CONDUCTOR_SYSTEMCTL: ":" };
 const dry = spawnSync("bash", [INSTALL, "--dry-run"], { env: over, encoding: "utf8" });
-check("dry-run：exit=0 且打印计划（含 [dry-run] 标记与 600 权限声明）", dry.status === 0 && dry.stdout.includes("[dry-run]") && dry.stdout.includes("chmod 600"));
+check("dry-run：exit=0 且打印计划（含 [dry-run] 标记与 600 权限声明）", dry.status === 0 && dry.stdout.includes("[dry-run]") && dry.stdout.includes("600"));
 check("dry-run：不动系统——env/unit 目标均未创建", !fs.existsSync(tmpEnv) && !fs.existsSync(tmpUnitDir));
 
 // ---- 5. tmp 沙盒真跑（SYSTEMCTL=: 吞掉 systemctl 步骤）：文件落地 + 权限 + key 不进 unit ----
@@ -47,8 +52,12 @@ check("真跑（旁路 tmp）：exit=0，env+unit 落地", envOk, (real.stderr |
 check("真跑（旁路 tmp）：env 文件含 key 且权限 600（创建即 600，无中间态）",
 	envOk && fs.readFileSync(tmpEnv, "utf8").includes("ZAI_CODING_CN_API_KEY=test-dummy-key-not-real") && (fs.statSync(tmpEnv).mode & 0o777) === 0o600,
 	`mode=${(fs.statSync(tmpEnv).mode & 0o777).toString(8)}`);
-check("真跑（旁路 tmp）：落地的 unit 与 repo 源一致（key 不可能混进去）",
-	envOk && fs.readFileSync(path.join(tmpUnitDir, "pianist-conductor.service"), "utf8") === unit);
+const landed = envOk ? fs.readFileSync(path.join(tmpUnitDir, "pianist-conductor.service"), "utf8") : "";
+check("真跑（旁路 tmp）：落地 unit 是模板展开结果（占位符已替换，key 不可能混进去）",
+	envOk && landed === unit
+		.replaceAll("__REPO_HOME__", path.resolve(CWD))
+		.replaceAll("__NODE_BIN__", spawnSync("bash", ["-c", "command -v node"], { encoding: "utf8" }).stdout.trim())
+	&& !landed.includes("ZAI"));
 const again = spawnSync("bash", [INSTALL], { env: over, encoding: "utf8" });
 check("幂等：同参数二跑 exit=0 不炸", again.status === 0, (again.stderr || "").trim().slice(0, 200));
 
