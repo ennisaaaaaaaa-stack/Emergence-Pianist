@@ -65,5 +65,15 @@ check("场景C：不可读=降级出声（拉不到≠没有）", outC.includes(
 const outD = execFileSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--status"], { env: envA, encoding: "utf8" });
 check("场景D：启动日志含 node 版本自白（--status 路径不走常驻行，结构面断言源码）", src.includes("19连抽事故的钉子") && src.includes("node=${process.execPath}"), "");
 
+// ---- 场景E：钉子②——pi 子进程不走 .bin/pi 的 env-node shebang（服务 PATH 是系统 node v20，
+// engines>=22 一行炸；当日 32 场 28 场 1 秒死）。结构面：spawn 第一个参数必须是 process.execPath，
+// pi 入口作为 JS 文件参数传入；.mjs/.js 后缀的 CONDUCTOR_PI_BIN（stub）原样透传。----
+check("场景E：pi 拉起走 process.execPath 直跑入口 JS（钉子②：爹哪个 node 儿子哪个 node）",
+	src.includes(`spawn(process.execPath, [piEntry,`) && src.includes(`"pi-coding-agent", "dist", "bundle", "cli.js"`),
+	"");
+check("场景E2：CONDUCTOR_PI_BIN 传 .mjs/.js（stub）时原样透传不做路径替换",
+	/piBin\.endsWith\("\.mjs"\) \|\| piBin\.endsWith\("\.js"\)/.test(src),
+	"");
+
 console.log(`\n${pass}/${total}`);
 process.exit(pass === total ? 0 : 1);

@@ -77,6 +77,8 @@ systemctl is-active pianist-conductor && node src/conductor.mjs --status  # chec
 
 Discovery loop shipped (telemetry → scanner → retropad → drafts) and teardown-tested. The candidate lifecycle (shadow / promote / reject, due budgets, exam fields) is not built yet — this repo tracks the first half of the loop only.
 
+Conductor part pool: wander / env-event / todo-review / spoor-session. spoor-session promoted 2026-09-25 (§8 second cut): the conductor pre-fetches the workbench "next steps" board and machine-checks the three-piece admission (provenance / acceptance criteria / due budget) per todo; the spawned session then rules on which qualified todos are worth acting on now (consensus-claim notify duty, budget-death rulings, first-round full roster for retroactive approval — notify-ring delivery lands in the next cut).
+
 ## License
 
 TBD

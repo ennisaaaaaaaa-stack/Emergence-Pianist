@@ -15,7 +15,7 @@ set -u
 
 # 可配置路径（公开版默认 $HOME，本地可用 env 覆盖）
 GRIMOIRE_DIR="${GRIMOIRE_DIR:-$HOME/Agent-Grimoire}"
-STIGMERGY_ROOT="${STIGMERGY_ROOT:-$HOME/the-workbench}"
+STIGMERGY_ROOT="${STIGMERGY_ROOT:-$HOME/Stigmergy}"
 SPOOR_SRC="${SPOOR_SRC:-$HOME/session-spoor}"
 SPOOR_PYTHON="${SPOOR_PYTHON:-$HOME/spoor-venv/bin/python}"
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
