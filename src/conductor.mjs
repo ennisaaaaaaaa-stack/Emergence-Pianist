@@ -93,7 +93,7 @@ const PARTS_ALL = [
 	},
 	{
 		id: "todo-review",
-		desc: "§八 session spoor 第一铲：to do 三件套过滤（准入细则待the user拍板，判据占位在 prompt）",
+		desc: "§八 session spoor 第一铲：to do 三件套过滤（细则已转正 2026-09-25 三题裁定）",
 		// 牌面由 conductor 拉起前注入（board 参数）；workbench 读不到时降级为空牌面确认跑
 		prompt: (board) => [
 			"你是 Emergence Pianist 的待办对账分身（todo-review part）。这条产线是蓝图 §八 session spoor 的第一铲：家里各项目 STATUS.md 的「下一步」段攒了债，你来按准入三件套过一遍筛。",
@@ -105,15 +105,44 @@ const PARTS_ALL = [
 					? "（workbench 不可读——本轮降级为空牌面确认跑，写 100 字以内的收尾笔记即可。拉不到清单不等于清单为空。）"
 					: "（各项目「下一步」段均空——真无债可审，写 100 字以内的收尾笔记即可。）",
 			"",
-			"准入三件套（蓝图 §八原文：to do 须「真正协商过」，否则是漂着的债）：",
-			"1. 对话出处——能指回一段真实协商（人/楼层/日期）。光在 STATUS 里躺着的算「想要」不算「协商过」。",
-			"2. 验收判据——可检查：谁跑、跑什么、什么输出算过。「优化性能」不算，「node20 上 npm install 报 engines 人话（实跑验证）」算。",
-			"3. 到期预算——到期日 + 烧钱上限。缺的不是静默滚存，是出声报死。",
+			"准入三件套（§八原文 + 2026-09-25 细则转正，三题裁定已进）：",
+			"1. 对话出处——能指回一段真实协商（房间+楼层号，或 session id）。出处判据是「有人接过这一单」不是「有人写过这一行」；光在 STATUS 里躺着的算「想要」不算「协商过」。最低门槛（裁定①）：the user 明确批过算，AI 侧自己认领也算——但认领达成共识时须通知 the user（通知义务），出处须指向她可见的楼层。",
+			"2. 验收判据——写成可检查的：谁跑、跑什么、什么输出算过。反例「优化性能」；正例「node20 上 npm install 报 engines 人话（实跑验证）」。",
+			"3. 到期预算——两半：到期日 + 烧钱上限。超任一半不是静默滚存，是出声报死：「此项 X 日到期 / 超预算 Y，弃或续请拍板」。报死后谁拍板（裁定②）：花钱的事 the user 拍，时间的事当天值班者拍。",
 			"",
 			"逐条裁：三件套齐的标「够格」；缺 X 的如实标「跳过：缺X」——不装筛完，不够格也不删（回炉等补齐）。条目格式（T<id> [归属]…｜出处｜判据）与三件套是两回事：格式齐是协议 v0.9 的形状，三件套齐才是协商过。",
 			"非条目格式的行重点照顾：它们多半是旧格式漂着的债，逐条按三件套裁并点名「待迁移」。",
 			"收尾笔记 200 字以内：够格几条、跳过几条（各缺什么）、待迁移几条。",
 			"纪律：只读不写——STATUS.md、journal 你都不碰；单 session 预算内闭环。",
+		].join("\n"),
+	},
+	{
+		id: "spoor-session",
+		desc: "§八 session spoor 真身：三件套准入+分身裁决",
+		// 牌面由 conductor 拉起前注入（board 参数+机判结果）；workbench 读不到时降级为空牌面确认跑
+		// 三件套机判占在 conductor（只判形状），值不值得动占在 prompt（分身裁决）——洞2刀法同款
+		prompt: (board, judged) => [
+			"你是 Emergence Pianist 的 session spoor 分身（spoor-session part）。这条产线消费「漂着的债」：todo-review 管筛形状，你管动真章——三件套机判已由 conductor 做完，你的裁决对象是每条够格 to do 的「现在值不值得动」。",
+			"",
+			"本轮牌面（conductor 预取+三件套机判，workbench 各项目 STATUS.md「下一步」段）：",
+			board === null
+				? "（workbench 不可读——本轮降级为空牌面确认跑，写 100 字以内的收尾笔记即可。拉不到牌面不等于没有债。）"
+				: judged?.groups?.length
+					? judged.groups.map((g) => [
+						`[${g.project}]${g.confirmed ? "　" + g.confirmed : ""}`,
+						...g.rows.map((r) => `- ${r.verdict === "够格" ? "✔" : r.verdict.startsWith("跳过") ? "✘" : "？"} ${r.head} —— 机判：${r.verdict}`),
+					].join("\n")).join("\n")
+					: "（各项目「下一步」段均空——真无债可动，写 100 字以内的收尾笔记即可。）",
+			"",
+			"三件套机判口径（the user 2026-09-25 准入细则拍板）：①对话出处——出处栏非空且可指回（房间#楼层 或 session 引用）；②验收判据——非纯口号的可检查形状（谁跑/跑什么/什么算过）；③到期预算——有日期形状（YYYY-MM-DD 或 N天内）。缺任何一件=跳过：缺X，如实报不装消费完，也不替 the user 补栏。",
+			"",
+			"你的裁决：",
+			"1. 逐条够格 to do 判断「现在值不值得动」——值得的给一句话理由，不值得的也如实说。",
+			"2. AI 侧认领开工的：认领即算协商过（拍板1），但达成共识时必须通知 the user——认领共识经壳的 /notify 知道线出声（本铲通知环未接线，先把认领结论写进收尾笔记，下一铲接投递）。",
+			"3. 超预算报死（拍板2）：花钱的事 the user 拍板，时间的事当天值班者拍板——你不替谁拍，只出声。",
+			"",
+			"收尾笔记（200字内）必须含：够格 N 条/跳过 M 条（各缺什么）/格式非法 J 条（待迁移）；够格里值得动的 K 条及一句话理由；首轮跑全量时附够格名单（T<id> 串即可）供 the user 追认（拍板3：第一轮跑完给全量名单）。",
+			"纪律：只读不动账——STATUS.md 不写回、journal 不碰；跳过条不回炉不删；单 session 预算内闭环。",
 		].join("\n"),
 	},
 ];
@@ -178,12 +207,16 @@ async function fetchEnvEvents(lastId) {
 // todo-review 牌面预取：本地 the-workbench workbench 各项目 STATUS.md 的「下一步」段。
 // 三件套判断占在 prompt 不在逻辑（洞2刀法，collab-issue/#771 认的形状）——这里只供牌面：
 // 抽条目原文+标是否条目格式（T<id> [归属] …｜出处｜判据：…），够不够格由 session 按提示词裁。
-// 细则（the-remote:2026-09-25-spoor-session准入细则-草稿.md）拍板落地那天只换判据不动骨架。
+// 细则（the-remote:2026-09-25-spoor-session准入细则-草稿.md）2026-09-25 三题裁定转正：
+// ①AI认领算协商过+通知义务 ②报死拍板=花钱the user/时间值班者 ③追认有效+第一轮全量名单给她。
+// 判据文字已进 prompt，骨架未动——「只换判据不动骨架」照旧成立。
+// spoor-session 同源吃 boards（按项目结构化条目+排序确认段头）；三件套机判在 judgeSpoorBoard。
 // 读不到=降级 null（拉不到清单≠清单为空）；空段=[]=真无债可审。
-function fetchTodoBoard() {
-	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "the-workbench");
+function fetchTodoBoard(partId = "todo-review") {
+	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "Stigmergy");
 	const wb = path.join(root, "workbench");
 	const lines = [];
+	const boards = []; // spoor-session 用：按项目分组的条目 + 排序确认段头
 	let projects = 0;
 	try {
 		const dirs = fs.readdirSync(wb, { withFileTypes: true })
@@ -198,22 +231,70 @@ function fetchTodoBoard() {
 			const nextH2 = after.match(/^##\s/m);
 			const section = (nextH2 ? after.slice(0, nextH2.index) : after).trim();
 			if (!section) continue;
+			const entries = [];
+			let confirmed = null;
 			for (const line of section.split(/\r?\n/)) {
 				const t = line.trim();
-				if (!t || t.startsWith(">")) continue; // 排序确认线不进牌面
+				if (!t) continue;
+				if (t.startsWith(">")) { // 段头「> 排序确认：日期（确认人）·确认至第N条」——spoor 牌面用，行文牌面不进
+					if (t.includes("排序确认")) confirmed = t.replace(/^>\s*/, "");
+					continue;
+				}
 				const body = t.startsWith("- ") ? t.slice(2) : t;
 				const isItem = /^T\d+\s*\[/.test(body); // 待办协议 v0.9 条目形状
 				let shown = body.slice(0, 160);
 				if (body.length > 160) shown += "…";
 				if (!isItem) shown += "（非条目格式）";
 				lines.push(`- [${dir}] ${shown}`);
+				entries.push({ raw: body, isItem });
 			}
+			if (entries.length || confirmed) boards.push({ project: dir, confirmed, entries });
 		}
 	} catch (e) {
-		console.warn(`[conductor] todo-review 牌面预取失败——空牌面降级（拉不到不等于没有）: ${e?.message ?? e}`);
+		console.warn(`[conductor] ${partId} 牌面预取失败——空牌面降级（拉不到不等于没有）: ${e?.message ?? e}`);
 		return null;
 	}
-	return { projects, lines };
+	return { projects, lines, boards };
+}
+
+// spoor-session 三件套机判（the user 2026-09-25 准入细则拍板）：逐条判「形状」，值不值得动留给分身。
+// ①对话出处：出处栏非空且可指回（房间#楼层 如 collab#771，或 session 引用）——光有日期不算指回；
+// ②验收判据：判据栏非空且非纯口号——机判代理：含可执行/可观测锚点（跑/验证类动词、命令、判线如全绿/入库）；
+// ③到期预算：条目里有日期形状（YYYY-MM-DD 或 N天内——细则只认这两种，9/25 类短写不算）。
+// 缺任何一件=跳过：缺X（可多缺并列）；非条目格式不机判（格式非法·待迁移），不装能判。
+function judgeSpoorBoard(board) {
+	const SRC_SHAPE = /#\d+|session/i; // 房间#楼层 或 session 引用
+	const CRIT_SHAPE = /`|npm|node|exit|全对|全绿|全过|通过率|≥|>=|不报|报错|一致|匹配|入库|复测|实测|实跑|跑一|执行|验证|核对|逐条|自查|清单/;
+	const DUE_SHAPE = /\d{4}-\d{2}-\d{2}|\d+\s*[天日]内/;
+	const groups = [];
+	const counts = { ok: 0, skip: 0, lackSource: 0, lackCriteria: 0, lackBudget: 0, malformed: 0 };
+	for (const b of board.boards ?? []) {
+		const rows = [];
+		for (const e of b.entries) {
+			if (!e.isItem) {
+				counts.malformed += 1;
+				rows.push({ head: e.raw.slice(0, 60) + (e.raw.length > 60 ? "…" : ""), verdict: "格式非法（旧格式，待迁移）" });
+				continue;
+			}
+			const cols = e.raw.split("｜").map((s) => s.trim()); // v0.9：标题｜出处｜判据：…（预算形状可在任一栏）
+			const crit = (cols.find((c) => c.startsWith("判据")) ?? "").replace(/^判据[：:]\s*/, "");
+			const src = cols.slice(1).find((c) => !c.startsWith("判据")) ?? "";
+			const lacks = [];
+			if (!src || !SRC_SHAPE.test(src)) lacks.push("缺出处");
+			if (!crit || !CRIT_SHAPE.test(crit)) lacks.push("缺判据");
+			if (!DUE_SHAPE.test(e.raw)) lacks.push("缺预算");
+			const verdict = lacks.length ? `跳过：${lacks.join("·")}` : "够格";
+			if (lacks.length) counts.skip += 1; else counts.ok += 1;
+			for (const l of lacks) {
+				if (l === "缺出处") counts.lackSource += 1;
+				else if (l === "缺判据") counts.lackCriteria += 1;
+				else counts.lackBudget += 1;
+			}
+			rows.push({ head: cols[0].slice(0, 60) + (cols[0].length > 60 ? "…" : ""), verdict });
+		}
+		if (rows.length) groups.push({ project: b.project, confirmed: b.confirmed, rows });
+	}
+	return { groups, counts, projects: board.projects };
 }
 
 function launchPart(part) {
@@ -227,7 +308,14 @@ function launchPart(part) {
 		};
 		// CONDUCTOR_PI_BIN：测试/演练时可换 stub（真拉起走默认 pi）
 		const piBin = process.env.CONDUCTOR_PI_BIN ?? "./node_modules/.bin/pi";
-		const child = spawn(piBin, ["-p", "--model", "zai-coding-cn/glm-5.2", part.prompt], {
+		// 钉子②（2026-09-25 尸检发现）：pi 的 shebang 是 `#!/usr/bin/env node`，服务 PATH 里
+		// 只有系统 node（v20），engines>=22 的 ESM 一行就炸（当日 32 场 28 场 1 秒死）。
+		// 修法：不用 .bin/pi 的 shebang，直接「conductor 同款 node + pi 入口 JS」——
+		// 爹用哪个 node 儿子就用哪个，版本错位结构性排除（19连抽钉子钉了爹漏了儿子，这次钉儿子）。
+		const piEntry = piBin.endsWith(".mjs") || piBin.endsWith(".js")
+			? piBin
+			: path.resolve(CWD, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+		const child = spawn(process.execPath, [piEntry, "-p", "--model", "zai-coding-cn/glm-5.2", part.prompt], {
 			cwd: CWD, env, stdio: ["ignore", "pipe", "pipe"],
 		});
 		let out = ""; let err = "";
@@ -274,12 +362,26 @@ async function tick() {
 	// todo-review：拉起前预取 workbench「下一步」牌面（失败降级空牌面，session 照拉）
 	let board = undefined;
 	if (part.id === "todo-review") {
-		board = fetchTodoBoard();
+		board = fetchTodoBoard("todo-review");
 		prompt = part.prompt(board);
 	}
-	console.log(`[conductor] 空闲 ${idleMin}min > ${IDLE_MS / 60000}min → 抽卡：${part.id}（${part.desc}）${part.id === "env-event" ? `，牌面 ${events === null ? "预取失败降级" : events.length + " 条"}（>${st.last_env_event_id ?? 0}）` : part.id === "todo-review" ? `，牌面 ${board === null ? "预取失败降级" : board.lines.length + " 行/" + board.projects + " 项目"}` : ""}`);
+	// spoor-session：同源牌面 + 三件套机判结果一并注入（机判裁形状，分身裁值不值得动）
+	let spoor = undefined;
+	if (part.id === "spoor-session") {
+		board = fetchTodoBoard("spoor-session");
+		spoor = board === null ? null : judgeSpoorBoard(board);
+		prompt = part.prompt(board, spoor);
+	}
+	// 抽卡出声：牌面摘要一行（各 part 自己的形状）
+	let note = "";
+	if (part.id === "env-event") note = `，牌面 ${events === null ? "预取失败降级" : events.length + " 条"}（>${st.last_env_event_id ?? 0}）`;
+	else if (part.id === "todo-review") note = `，牌面 ${board === null ? "预取失败降级" : board.lines.length + " 行/" + board.projects + " 项目"}`;
+	else if (part.id === "spoor-session") note = `，牌面 ${spoor === null ? "预取失败降级" : `够格${spoor.counts.ok}/跳过${spoor.counts.skip}（缺出处${spoor.counts.lackSource}·缺判据${spoor.counts.lackCriteria}·缺预算${spoor.counts.lackBudget}）·格式非法${spoor.counts.malformed}/${spoor.projects} 项目`}`;
+	console.log(`[conductor] 空闲 ${idleMin}min > ${IDLE_MS / 60000}min → 抽卡：${part.id}（${part.desc}）${note}`);
 	if (DRY) {
 		console.log(`[conductor] dry-run：不拉起，不记账。今日 draws=${day.draws}`);
+		// spoor-session 演练面：真注入的 prompt 整段出声——dry-run 即完整彩排（牌面+机判+纪律全可见）
+		if (part.id === "spoor-session") console.log(String(prompt).split("\n").map((l) => `[spoor-prompt] ${l}`).join("\n"));
 		return { acted: false, why: "dry" };
 	}
 
