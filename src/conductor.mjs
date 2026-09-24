@@ -38,6 +38,10 @@ function saveState(st) {
 }
 
 // 空闲检测：遥测目录所有文件里最新一条 message_end/tool_use 距 now > IDLE_MS
+// 忙判测试开关：测试/演练时置 CONDUCTOR_IDLE_NOW=1 跳过遥测忙判（视为已空闲）
+function idleMsOverride() {
+	return process.env.CONDUCTOR_IDLE_NOW === "1";
+}
 function lastActivityMs() {
 	const dir = process.env.PIANIST_TELEMETRY_DIR ?? path.join(CWD, "data", "telemetry");
 	let latest = 0;
@@ -88,10 +92,28 @@ const PARTS_ALL = [
 		].join("\n"),
 	},
 	{
-		id: "spoor-session",
-		desc: "§八 session spoor（缓建，占位）",
-		prompt: [
-			"你是 Emergence Pianist 的 session spoor 分身（spoor-session part）。这条产线还在缓建（蓝图 §八准入条件未满），今天这一场是占位确认跑：读 data/ 下遥测与经图现状，写一段 100 字以内的「今天这条产线看见了什么」收尾笔记即可，不做任何写操作。",
+		id: "todo-review",
+		desc: "§八 session spoor 第一铲：to do 三件套过滤（准入细则待甜心拍板，判据占位在 prompt）",
+		// 牌面由 conductor 拉起前注入（board 参数）；workbench 读不到时降级为空牌面确认跑
+		prompt: (board) => [
+			"你是 Emergence Pianist 的待办对账分身（todo-review part）。这条产线是蓝图 §八 session spoor 的第一铲：家里各项目 STATUS.md 的「下一步」段攒了债，你来按准入三件套过一遍筛。",
+			"",
+			"本轮牌面（conductor 预取，workbench 各项目 STATUS.md「下一步」段原文）：",
+			board && board.lines && board.lines.length
+				? board.lines.join("\n")
+				: board === null
+					? "（workbench 不可读——本轮降级为空牌面确认跑，写 100 字以内的收尾笔记即可。拉不到清单不等于清单为空。）"
+					: "（各项目「下一步」段均空——真无债可审，写 100 字以内的收尾笔记即可。）",
+			"",
+			"准入三件套（蓝图 §八原文：to do 须「真正协商过」，否则是漂着的债）：",
+			"1. 对话出处——能指回一段真实协商（人/楼层/日期）。光在 STATUS 里躺着的算「想要」不算「协商过」。",
+			"2. 验收判据——可检查：谁跑、跑什么、什么输出算过。「优化性能」不算，「node20 上 npm install 报 engines 人话（实跑验证）」算。",
+			"3. 到期预算——到期日 + 烧钱上限。缺的不是静默滚存，是出声报死。",
+			"",
+			"逐条裁：三件套齐的标「够格」；缺 X 的如实标「跳过：缺X」——不装筛完，不够格也不删（回炉等补齐）。条目格式（T<id> [归属]…｜出处｜判据）与三件套是两回事：格式齐是协议 v0.9 的形状，三件套齐才是协商过。",
+			"非条目格式的行重点照顾：它们多半是旧格式漂着的债，逐条按三件套裁并点名「待迁移」。",
+			"收尾笔记 200 字以内：够格几条、跳过几条（各缺什么）、待迁移几条。",
+			"纪律：只读不写——STATUS.md、journal 你都不碰；单 session 预算内闭环。",
 		].join("\n"),
 	},
 ];
@@ -153,6 +175,47 @@ async function fetchEnvEvents(lastId) {
 	});
 }
 
+// todo-review 牌面预取：本地 Stigmergy workbench 各项目 STATUS.md 的「下一步」段。
+// 三件套判断占在 prompt 不在逻辑（洞2刀法，洄#769/#771 认的形状）——这里只供牌面：
+// 抽条目原文+标是否条目格式（T<id> [归属] …｜出处｜判据：…），够不够格由 session 按提示词裁。
+// 细则（svps:2026-09-25-spoor-session准入细则-草稿.md）拍板落地那天只换判据不动骨架。
+// 读不到=降级 null（拉不到清单≠清单为空）；空段=[]=真无债可审。
+function fetchTodoBoard() {
+	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "Stigmergy");
+	const wb = path.join(root, "workbench");
+	const lines = [];
+	let projects = 0;
+	try {
+		const dirs = fs.readdirSync(wb, { withFileTypes: true })
+			.filter((d) => d.isDirectory()).map((d) => d.name).sort();
+		for (const dir of dirs) {
+			let text;
+			try { text = fs.readFileSync(path.join(wb, dir, "STATUS.md"), "utf8"); } catch { continue; }
+			projects += 1;
+			const m = text.match(/^##\s*下一步\s*$/m);
+			if (!m) continue;
+			const after = text.slice(m.index + m[0].length);
+			const nextH2 = after.match(/^##\s/m);
+			const section = (nextH2 ? after.slice(0, nextH2.index) : after).trim();
+			if (!section) continue;
+			for (const line of section.split(/\r?\n/)) {
+				const t = line.trim();
+				if (!t || t.startsWith(">")) continue; // 排序确认线不进牌面
+				const body = t.startsWith("- ") ? t.slice(2) : t;
+				const isItem = /^T\d+\s*\[/.test(body); // 待办协议 v0.9 条目形状
+				let shown = body.slice(0, 160);
+				if (body.length > 160) shown += "…";
+				if (!isItem) shown += "（非条目格式）";
+				lines.push(`- [${dir}] ${shown}`);
+			}
+		}
+	} catch (e) {
+		console.warn(`[conductor] todo-review 牌面预取失败——空牌面降级（拉不到不等于没有）: ${e?.message ?? e}`);
+		return null;
+	}
+	return { projects, lines };
+}
+
 function launchPart(part) {
 	return new Promise((resolve) => {
 		const env = {
@@ -190,7 +253,7 @@ async function tick() {
 	}
 
 	const { latest, nFiles } = lastActivityMs();
-	const idleMs = Date.now() - latest;
+	const idleMs = idleMsOverride() ? IDLE_MS + 1 : Date.now() - latest;
 	const idleMin = (idleMs / 60000).toFixed(1);
 	if (idleMs <= IDLE_MS) {
 		console.log(`[conductor] 忙（last=${idleMin}min 前，files=${nFiles}）——不拉`);
@@ -208,7 +271,13 @@ async function tick() {
 		events = await fetchEnvEvents(st.last_env_event_id ?? 0);
 		prompt = part.prompt(events);
 	}
-	console.log(`[conductor] 空闲 ${idleMin}min > ${IDLE_MS / 60000}min → 抽卡：${part.id}（${part.desc}）${part.id === "env-event" ? `，牌面 ${events === null ? "预取失败降级" : events.length + " 条"}（>${st.last_env_event_id ?? 0}）` : ""}`);
+	// todo-review：拉起前预取 workbench「下一步」牌面（失败降级空牌面，session 照拉）
+	let board = undefined;
+	if (part.id === "todo-review") {
+		board = fetchTodoBoard();
+		prompt = part.prompt(board);
+	}
+	console.log(`[conductor] 空闲 ${idleMin}min > ${IDLE_MS / 60000}min → 抽卡：${part.id}（${part.desc}）${part.id === "env-event" ? `，牌面 ${events === null ? "预取失败降级" : events.length + " 条"}（>${st.last_env_event_id ?? 0}）` : part.id === "todo-review" ? `，牌面 ${board === null ? "预取失败降级" : board.lines.length + " 行/" + board.projects + " 项目"}` : ""}`);
 	if (DRY) {
 		console.log(`[conductor] dry-run：不拉起，不记账。今日 draws=${day.draws}`);
 		return { acted: false, why: "dry" };
@@ -250,7 +319,7 @@ async function main() {
 		return;
 	}
 	if (ONCE) { await tick(); return; }
-	console.log(`[conductor] 常驻启动：idle>${IDLE_MS / 60000}min tick=${TICK_MS / 1000}s budget=${DAILY_BUDGET} 元/日(JST) parts=${PARTS.length}`);
+	console.log(`[conductor] 常驻启动：idle>${IDLE_MS / 60000}min tick=${TICK_MS / 1000}s budget=${DAILY_BUDGET} 元/日(JST) parts=${PARTS.length} node=${process.execPath} ${process.version}（19连抽事故的钉子：版本错位第一跳出声，不用验尸）`);
 	while (true) {
 		try { await tick(); } catch (e) { console.warn(`[conductor] tick 异常（不中断）：${e?.message ?? e}`); }
 		await new Promise((r) => setTimeout(r, TICK_MS));
