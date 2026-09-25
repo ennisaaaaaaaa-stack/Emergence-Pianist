@@ -33,6 +33,9 @@ const env = {
 	PIANIST_AGENT_ID: "pianist-dev-2",
 	PIANIST_SHELL_URL: "http://127.0.0.1:8770",
 	ZAI_CODING_CN_API_KEY: process.env.ZAI_CODING_CN_API_KEY || "",
+	// T5：夹具轮关遥测——fixture 的 TDD 红绿循环是刻意制造的扫描信号，
+	// 落进遥测会在 14 天窗里冒充热点（9/25 真数据首扫实证：错误热点×12 全是它）
+	PORTALK_TELEMETRY: "off",
 	NO_COLOR: "1",
 };
 
