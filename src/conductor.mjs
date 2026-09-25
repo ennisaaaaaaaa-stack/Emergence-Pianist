@@ -5,7 +5,7 @@
 // 用法：常驻 / --once / --once --dry-run / --status
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const args = process.argv.slice(2);
 function arg(name, dflt) {
@@ -17,6 +17,7 @@ function arg(name, dflt) {
 const ONCE = args.includes("--once");
 const DRY = args.includes("--dry-run");
 const STATUS = args.includes("--status");
+const SELFCHECK = args.includes("--self-check");
 const CWD = path.resolve(import.meta.dirname, "..");
 const SHELL_URL = process.env.PIANIST_SHELL_URL ?? "http://127.0.0.1:8770";
 const IDLE_MS = Number(arg("idle-min", "30")) * 60_000;
@@ -175,6 +176,38 @@ function dailySpendYen() {
 
 function drawPart() {
 	return PARTS[Math.floor(Math.random() * PARTS.length)];
+}
+
+// ---- 正典自检（seed①，2026-09-26 wander 认领）----
+// §1 事故形状：残骸 unit disable 后仍运行时存活、异名同源 unit 重启后双跑——disable 只管
+// 重启不管运行时，此钉补运行时那半：常驻启动时验明正身，所属 unit 必须是 enabled 的正典。
+// 不满足→出声退出 exit 1（Restart=on-failure 会每 30s 拉一次——journal 里的重复报警声就是
+// 报警器本身，直到有人 disable/拆除残骸或跑 install-conductor.sh 正典化）。
+// 例外与免检：非 systemd 托管（手动/dev 跑）免检；systemd-run 的 .scope 形状免检（v1 钉
+// 不覆盖）；systemctl 不在（证据不足）放行——只凭实证拒绝，不凭缺席挡门。
+// CONDUCTOR_SKIP_UNIT_CHECK=1：显式豁免（起草例外用，得在 unit env 里写明）。CONDUCTOR_SYSTEMCTL：
+// 测试/演练换 stub（与 install-conductor.sh 同名覆写变量）。
+const CANONICAL_UNIT = "pianist-conductor.service";
+function ownUnitName(cgroupFile = "/proc/self/cgroup") {
+	try {
+		const cg = fs.readFileSync(cgroupFile, "utf8");
+		const m = cg.match(/\/([A-Za-z0-9@:_.\-]+\.service)(?:\/|\s|$)/m);
+		return m ? m[1] : null;
+	} catch { return null; }
+}
+function unitSelfCheck(cgroupFile = "/proc/self/cgroup", systemctlCmd = process.env.CONDUCTOR_SYSTEMCTL ?? "systemctl") {
+	const unit = ownUnitName(cgroupFile);
+	if (!unit) return { unit: null, enabled: null, ok: true, reason: "非 systemd unit 托管（手动/dev 跑或 .scope 形状）——免检" };
+	if (unit !== CANONICAL_UNIT)
+		return { unit, enabled: null, ok: false, reason: `异名同源残骸（正典是 ${CANONICAL_UNIT}；disable 只管重启，运行时这半由本钉管）` };
+	const r = spawnSync(systemctlCmd, ["is-enabled", CANONICAL_UNIT], { encoding: "utf8" });
+	if (r.status === null)
+		return { unit, enabled: null, ok: true, reason: `systemctl 不可用（${r.error?.code ?? "无退出码"}）——证据不足，放行` };
+	if (r.status !== 0) {
+		const st = String(r.stdout ?? "").trim() || `exit ${r.status}`;
+		return { unit, enabled: st, ok: false, reason: `正典 unit 未 enable（is-enabled=${st}）——disable 后的运行时残留` };
+	}
+	return { unit, enabled: "enabled", ok: true, reason: "正典在位且 enabled" };
 }
 
 // env-event 牌面预取：the-remote event-queue 里 replay_day IS NULL 的实时行（未回放消费的）。
@@ -410,6 +443,11 @@ async function tick() {
 }
 
 async function main() {
+	if (SELFCHECK) { // 彩排模式：同一套判据单跑一面（dry-run 即完整彩排的-house style）
+		const r = unitSelfCheck(arg("cgroup-file", "/proc/self/cgroup"));
+		console.log(`[conductor] 正典自检：unit=${r.unit ?? "(非systemd)"} enabled=${r.enabled ?? "-"} → ${r.ok ? "通过" : "拒绝"}——${r.reason}`);
+		process.exit(r.ok ? 0 : 1);
+	}
 	if (STATUS) {
 		const st = loadState();
 		const today = todayJST();
@@ -421,6 +459,16 @@ async function main() {
 		return;
 	}
 	if (ONCE) { await tick(); return; }
+	// 正典自检（仅常驻分支：--once/--dry-run/--status 是彩排/运维面，不设卡）：
+	// 不过→出声退出。残骸自退 = disable 后无需 stop/重启即达（seed①验收形状）。
+	if (process.env.CONDUCTOR_SKIP_UNIT_CHECK !== "1") {
+		const chk = unitSelfCheck();
+		if (!chk.ok) {
+			console.error(`[conductor] 正典自检不过（unit=${chk.unit}）：${chk.reason}——出声退出让位正典。修法：bash deploy/install-conductor.sh（正典化+拆残骸）；确属例外用 CONDUCTOR_SKIP_UNIT_CHECK=1 并在 unit env 写明理由。`);
+			process.exit(1);
+		}
+		console.log(`[conductor] 正典自检通过：${chk.reason}`);
+	}
 	console.log(`[conductor] 常驻启动：idle>${IDLE_MS / 60000}min tick=${TICK_MS / 1000}s budget=${DAILY_BUDGET} 元/日(JST) parts=${PARTS.length} node=${process.execPath} ${process.version}（19连抽事故的钉子：版本错位第一跳出声，不用验尸）`);
 	// SIGTERM 钩子（施工③常驻化，systemd stop 卫生）：默认死法也能停，但 journal 留 signal 尸检——
 	// 收工一行再 exit 0，重启/停止的账目干净。仅此 2 行，不碰循环逻辑。

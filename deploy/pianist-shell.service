@@ -1,0 +1,27 @@
+# pianist-shell — 壳（审批队列/写队列/通知环/遥测归档入口）常驻服务。
+# 根治欠账（2026-09-26 wander 认领 seed③）：此前壳由 start-pianist.sh 手拉或 systemd-run
+# transient——/run 里的 transient 重启即蒸发，壳死→遥测黑洞+预算闸失明（2026-09-25 事故
+# 实录 WANDER-OPS-2026-09-26 §2）。正典化后宿主机重启壳自动回位。
+# 壳无 key（纯本地代理，key 只活在 conductor.env）——环境内联即可，无需 EnvironmentFile。
+# __REPO_HOME__/__NODE_BIN__ 由 install-conductor.sh 部署时展开（模板占位不落真实路径）。
+
+[Unit]
+Description=Pianist shell (approval/write queue, telemetry ingest @127.0.0.1:8770)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_HOME__
+Environment="PIANIST_SHELL_PORT=8770"
+# 本机服务不走代理（.bashrc 的 http_proxy 指 Windows 侧 Clash 会劫走 127.0.0.1 健康检查——start-pianist.sh 同款防劫）
+Environment="no_proxy=127.0.0.1,localhost"
+Environment="NO_PROXY=127.0.0.1,localhost"
+ExecStart=__NODE_BIN__ __REPO_HOME__/src/shell.mjs
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pianist-shell
+
+[Install]
+WantedBy=multi-user.target

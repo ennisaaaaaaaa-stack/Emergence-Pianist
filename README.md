@@ -65,12 +65,13 @@ Scope of this cut: container engine only — `microvm` is a reserved discriminat
 
 ## Conductor (resident)
 
-The conductor runs as a systemd service (`Restart=on-failure`, budget gate 2 yen/JST-day as backstop; keys live only in `/etc/pianist/conductor.env`, mode 600, outside the repo):
+The conductor runs as a systemd service (`Restart=on-failure`, budget gate as backstop; keys live only in `/etc/pianist/conductor.env`, mode 600, outside the repo). The shell ships as a canonical unit too — both are installed by the same script, which also tears down same-source alien units (disable-only) and swaps any transient shell into the canonical unit:
 
 ```bash
-bash deploy/install-conductor.sh              # install/upgrade (idempotent; --dry-run previews; takes ZAI_CODING_CN_API_KEY from current env)
+CONDUCTOR_NODE_BIN=NODE_BIN bash deploy/install-conductor.sh   # installs conductor + shell units (idempotent; --dry-run previews; self-preserves when run from inside the conductor's own cgroup)
+node src/conductor.mjs --self-check                                          # rehearsal face of the startup canonicality gate (alien/disabled units exit loudly at boot)
 systemctl disable --now pianist-conductor && rm /etc/systemd/system/pianist-conductor.service /etc/pianist/conductor.env && systemctl daemon-reload  # uninstall
-systemctl is-active pianist-conductor && node src/conductor.mjs --status  # check status (is-active + today's spend/draws as JSON)
+systemctl is-active pianist-conductor pianist-shell && node src/conductor.mjs --status  # check status (is-active + today's spend/draws as JSON)
 ```
 
 ## Status
