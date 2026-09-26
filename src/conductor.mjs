@@ -217,8 +217,11 @@ function unitSelfCheck(cgroupFile = "/proc/self/cgroup", systemctlCmd = process.
 // 不会静默跳过任何一条；DESC+max 是快照语义，与「消费进度」的承诺不符。
 async function fetchEnvEvents(lastId) {
 	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "the-remote";
-	// -json 输出：多行 signal_text 不会被管道分隔符拆断（默认 list 模式会）
-	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM event-queue WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
+	// 表名可配：开源仓默认 event-queue（脱敏名）；私有部署在 /etc/pianist/conductor.env 写
+	// CONDUCTOR_EVENT_TABLE=event-queue 指回真表。引号包裹必须留——横杠表名裸写=SQL语法错
+	//（508753a 脱敏替换 event-queue→event-queue 伤到功能面，the author 9/26 复验 33adc97 时补获）。
+	const TABLE = (process.env.CONDUCTOR_EVENT_TABLE ?? "event-queue").replace(/"/g, "");
+	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM "${TABLE}" WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
 	const { execFile } = await import("node:child_process");
 	return new Promise((resolve) => {
 		execFile("ssh", [SSH, `sqlite3 -json ~/memory/mcp_memory.db "${q}"`], { timeout: 20_000 }, (err, stdout) => {
