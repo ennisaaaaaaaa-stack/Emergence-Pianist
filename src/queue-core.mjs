@@ -46,6 +46,15 @@ const BASH_AMBER_RES = [
 	/\b(scp|rsync)\b/,
 ];
 
+/** 沙箱内红区（施工⑤第二铲）：逃逸尝试 + 云 metadata 探测——零凭证铁律的防线位。
+ *  容器档加固（cap-drop ALL 等）挡执行面，这层挡视线面：冲着逃逸/摸凭证去的命令不许混过 amber */
+const SANDBOX_RED_RES = [
+	/169\.254\.169\.254/, // 云 metadata 端点——沙箱内不该有任何凭证可摸
+	/docker\.sock/, // 宿主 docker 套接字（挂载逃逸向量）
+	/\bnsenter\b/, // 挤进宿主命名空间
+	/>\s*\/proc\/sys\//, // 直写内核参数
+];
+
 /** 工具级风险表：在表 = 写操作（进写队列），值 = 视线层 */
 const ACTION_RISK = {
 	// Grimoire 写面
@@ -63,6 +72,16 @@ const ACTION_RISK = {
 	// spoor 涂鸦房写面
 	spoor_scratch_create: "amber",
 	spoor_scratch_write: "amber",
+	// 沙箱（施工⑤第二铲，分层初值the author拍板——命令深判见 classify，有异议以拍板为准不自行放宽）
+	sandbox_execute: "amber", // 起容器跑命令 = 资源动作，串行+通知（临时工语义，不挂审批）
+	sandbox_create_session: "amber", // 起容器
+	sandbox_run_in_session: "amber", // 跑命令（载荷深判可上浮 red）
+	sandbox_close: "amber", // 关全部会话
+	sandbox_close_session: "silent", // 清扫面
+	sandbox_is_alive: "silent", // 读面
+	sandbox_read_file: "silent", // 沙箱内文件面——隔离环境内读写不碰宿主
+	sandbox_write_file: "silent",
+	sandbox_upload: "silent",
 };
 
 /** 分层判定：red / amber / silent */
@@ -72,6 +91,14 @@ export function classify(action, payload) {
 		if (BASH_RED_RES.some((re) => re.test(cmd))) return "red";
 		if (BASH_AMBER_RES.some((re) => re.test(cmd))) return "amber";
 		return "silent";
+	}
+	// 沙箱命令面深判（施工⑤第二铲）：载荷拆出 command 复用 bash 红灰区正则——
+	// session 内 rm -rf / 逃逸尝试 / 云 metadata 仍挂审批（沙箱高危不减视线）；
+	// 例外：npm install/curl 等下载在容器内是正常工作流 → 维持 amber 不上浮 red
+	if (action === "sandbox_run_in_session" || action === "sandbox_execute") {
+		const cmd = String(payload?.command ?? "");
+		if (BASH_RED_RES.some((re) => re.test(cmd)) || SANDBOX_RED_RES.some((re) => re.test(cmd))) return "red";
+		if (BASH_AMBER_RES.some((re) => re.test(cmd))) return "amber";
 	}
 	return ACTION_RISK[action] ?? "silent";
 }
@@ -92,6 +119,16 @@ const ACTION_HUMAN = {
 	spoor_archive_pin: "把档案的默认版本钉到指定版本",
 	spoor_archive_unpin: "撤销档案的版本钉子",
 	spoor_archive_link: "给档案版本建一个外部指针",
+	// 沙箱（施工⑤第二铲）——命令面动作的 describe 会前置命令原文，见 describe()
+	sandbox_execute: "在一次性沙箱容器里跑命令",
+	sandbox_create_session: "开一间沙箱会话（新起一个隔离容器）",
+	sandbox_run_in_session: "在沙箱会话里跑命令",
+	sandbox_close: "关掉全部沙箱会话",
+	sandbox_close_session: "关掉一间沙箱会话",
+	sandbox_is_alive: "探一下沙箱会话是否还活着",
+	sandbox_read_file: "读沙箱容器里的文件",
+	sandbox_write_file: "往沙箱容器里写文件",
+	sandbox_upload: "往沙箱容器批量上传文件",
 };
 
 const ACTION_IMPACT = {
@@ -106,6 +143,16 @@ const ACTION_IMPACT = {
 	spoor_archive_pin: "改变后续默认读取指向，账本会记一笔",
 	spoor_archive_unpin: "默认读取回到最新版本，账本会记一笔",
 	spoor_archive_link: "只加指针不搬内容，账本会记一笔",
+	// 沙箱（施工⑤第二铲）
+	sandbox_execute: "起临时容器跑完即清，不碰宿主文件",
+	sandbox_create_session: "新起一个隔离容器（内存/CPU/进程数有上限，无端口映射）",
+	sandbox_run_in_session: "只在隔离容器内生效，宿主不受影响",
+	sandbox_close: "清扫全部沙箱容器，容器内文件一并丢弃",
+	sandbox_close_session: "清扫对应容器，容器内文件一并丢弃",
+	sandbox_is_alive: "只查状态，无副作用",
+	sandbox_read_file: "只读沙箱内文件，不碰宿主",
+	sandbox_write_file: "只写沙箱内文件，不碰宿主",
+	sandbox_upload: "只写沙箱内文件，不碰宿主",
 };
 
 const BASH_HUMAN = {
@@ -135,7 +182,16 @@ function bashHuman(cmd) {
 
 /** 人话动作描述。intent 是调用方自述（agent 填的「我在干嘛」），有则前置 */
 export function describe(action, payload, intent) {
-	const what = action === "bash" ? bashHuman(payload?.command) : (ACTION_HUMAN[action] ?? `调用 ${action}`);
+	let what;
+	if (action === "bash") {
+		what = bashHuman(payload?.command);
+	} else if (action === "sandbox_run_in_session" || action === "sandbox_execute") {
+		// 沙箱命令面：人话动作 + 命令原文——审批卡片必须看得到到底要跑什么
+		const cmd = String(payload?.command ?? "").trim();
+		what = `${ACTION_HUMAN[action] ?? "在沙箱里跑命令"}${cmd ? `：${cmd.slice(0, 80)}` : ""}`;
+	} else {
+		what = ACTION_HUMAN[action] ?? `调用 ${action}`;
+	}
 	const who = typeof intent === "string" && intent.trim() ? `（自述：${intent.trim().slice(0, 120)}）` : "";
 	return `${what}${who}`;
 }
@@ -148,6 +204,13 @@ export function impactOf(action, payload) {
 		if (/\bgit\s+push/.test(cmd)) return "推到远端仓库——别人能看到/拉到";
 		if (/--force|--hard/.test(cmd)) return "改写/丢弃历史——找回成本高";
 		return "会改动这台机器上的东西";
+	}
+	if (action === "sandbox_run_in_session" || action === "sandbox_execute") {
+		// 沙箱命令面：红区命令给防线位人话，删除给容器边界人话
+		const cmd = String(payload?.command ?? "");
+		if (SANDBOX_RED_RES.some((re) => re.test(cmd))) return "高危命令（逃逸/摸凭证形状）——就算在隔离容器里也要人类点头";
+		if (/\brm\b/.test(cmd)) return "沙箱内删除——删了容器里就没了，宿主不受影响";
+		return ACTION_IMPACT[action] ?? "只在隔离容器内生效，宿主不受影响";
 	}
 	return ACTION_IMPACT[action] ?? "本地服务调用，不直接改动文件";
 }

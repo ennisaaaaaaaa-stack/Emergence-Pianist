@@ -13,7 +13,9 @@ function check(name, ok, extra) { total++; if (ok) pass++; console.log(`${ok ? "
 
 function runOnce(root) {
 	const r = spawnSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], {
-		env: { ...process.env, CONDUCTOR_STIGMERGY_ROOT: root, CONDUCTOR_PARTS: "spoor-session", CONDUCTOR_STATE_DIR: path.join(root, "state"), CONDUCTOR_IDLE_NOW: "1" },
+		// 预算闸隔离：dailySpendYen 默认读仓内真实 data/telemetry——真机当天烧≥2 元会硬停拦住抽卡，
+		// 测试被真实账本劫持。指到 tmp 空账本（与 queue-e2e/todo-review 的隔离姿势同款）。
+		env: { ...process.env, CONDUCTOR_STIGMERGY_ROOT: root, CONDUCTOR_PARTS: "spoor-session", CONDUCTOR_STATE_DIR: path.join(root, "state"), CONDUCTOR_IDLE_NOW: "1", PIANIST_TELEMETRY_DIR: path.join(root, "tel") },
 		encoding: "utf8",
 	});
 	return r.stdout + "\n" + r.stderr; // 降级 warn 在 stderr——并流才看得见

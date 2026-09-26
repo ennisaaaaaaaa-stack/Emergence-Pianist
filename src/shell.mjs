@@ -6,7 +6,10 @@
  *   2. grimoire 提供者 —— 代理Grimoire（纯 HTTP server，转发即可）
  *   3. spoor 提供者 —— MCP streamable-HTTP 客户端（壳持有连接，一实例一署名）
  *
- * 刻意不做：多 slot / cron / 通信层 / 审批队列 —— 继续缓建。
+ * 施工④：审批队列 + 写队列 + 通知环（人类视线三层）已长出。
+ * 施工⑤第二铲：SandboxManager 壳级单例接入——sandbox_* 走 /tools/invoke 同一入口、
+ * 同一审批视线（red 挂审批 / amber 串行+通知 / silent 直走），不另开路由面。
+ * 刻意不做：多 slot / cron / 通信层 —— 继续缓建。
  * 铁律继承：壳永不直接调 LLM API（本骨架无任何 LLM 依赖，天然合规）。
  *
  * 架构依据：pianist-runtime-dependency-map v3（spoor 档案房）
@@ -19,6 +22,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { ApprovalQueue, NotifyRing, WriteQueue, classify } from "./queue-core.mjs";
+import { SandboxManager, SandboxError, serializeError } from "./sandbox.mjs";
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -188,6 +192,53 @@ async function mcpCall(url, tool, args) {
 }
 
 // ---------------------------------------------------------------------------
+// 提供者：sandbox —— 壳级单例 SandboxManager（施工⑤第二铲）
+// ---------------------------------------------------------------------------
+
+// 沙箱管理器是壳的新栏位（与 cron、MCP 同户口——Pi 明文禁止 extension 起后台资源）。
+// 惰性初始化：无沙箱调用时零开销零后台。
+// 引擎生命周期（会话表/容器清扫/退场扫孤）全归 SandboxManager，壳只做路由与视线。
+let sandboxManager = null;
+function getSandbox() {
+	if (!sandboxManager) sandboxManager = new SandboxManager();
+	return sandboxManager;
+}
+
+/**
+ * sandbox_* 载荷 → manager 方法（方法面照抄第一铲契约，不扩面）。载荷是 HTTP 边界的扁平形状：
+ * 必填 sessionId/command/path/content/files 按方法不同；可选 requestId/timeoutMs/cwd/env/deployment
+ * 透传为 opts——X-Request-ID 幂等由 manager 内 RequestCache 承接，壳不重复实现。
+ */
+function sandboxInvoke(route, payload) {
+	const m = getSandbox();
+	const p = payload ?? {};
+	const need = (field) => {
+		if (typeof p[field] !== "string" || !p[field]) {
+			throw new SandboxError(`${route.method} 缺必填字符串字段 ${field}`);
+		}
+		return p[field];
+	};
+	const opts = {};
+	for (const k of ["requestId", "timeoutMs", "cwd", "env", "deployment"]) {
+		if (p[k] !== undefined) opts[k] = p[k];
+	}
+	switch (route.method) {
+		case "execute": return m.execute(need("command"), opts);
+		case "createSession": return m.createSession(p.deployment, opts);
+		case "runInSession": return m.runInSession(need("sessionId"), need("command"), opts);
+		case "closeSession": return m.closeSession(need("sessionId"));
+		case "readFile": return m.readFile(need("sessionId"), need("path"), opts);
+		case "writeFile":
+			if (typeof p.content !== "string") throw new SandboxError("sandbox_write_file 需 content 字符串（二进制面本版契约不收）");
+			return m.writeFile(need("sessionId"), need("path"), p.content, opts);
+		case "upload": return m.upload(need("sessionId"), p.files, opts);
+		case "isAlive": return m.isAlive(need("sessionId"));
+		case "close": return m.close();
+		default: throw new SandboxError(`未知 sandbox 方法 ${route.method}`);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 工具目录（pianist可见的名字 → 提供者路由）
 // ---------------------------------------------------------------------------
 
@@ -220,6 +271,17 @@ const TOOL_ROUTES = {
 	spoor_scratch_create: { kind: "spoor", url: SPOOR_SCRATCHPAD_URL, tool: "scratchpad_create" },
 	spoor_scratch_write: { kind: "spoor", url: SPOOR_SCRATCHPAD_URL, tool: "scratchpad_write" },
 	spoor_scratch_read: { kind: "spoor", url: SPOOR_SCRATCHPAD_URL, tool: "scratchpad_read" },
+
+	// 沙箱（施工⑤第二铲：method = 第一铲契约方法名，载荷整形见 sandboxInvoke）
+	sandbox_execute: { kind: "sandbox", method: "execute" },
+	sandbox_create_session: { kind: "sandbox", method: "createSession" },
+	sandbox_run_in_session: { kind: "sandbox", method: "runInSession" },
+	sandbox_close_session: { kind: "sandbox", method: "closeSession" },
+	sandbox_read_file: { kind: "sandbox", method: "readFile" },
+	sandbox_write_file: { kind: "sandbox", method: "writeFile" },
+	sandbox_upload: { kind: "sandbox", method: "upload" },
+	sandbox_is_alive: { kind: "sandbox", method: "isAlive" },
+	sandbox_close: { kind: "sandbox", method: "close" },
 };
 
 /** 路径参数展开：grimoire_tag 需要 {tag}、grimoire_skill 需要 {id}（或 name） */
@@ -282,6 +344,7 @@ const writeQueue = new WriteQueue();
 function writeKey(action) {
 	if (action.startsWith("grimoire_")) return "grimoire";
 	if (action.startsWith("spoor_")) return `spoor:${action.slice(6, action.indexOf("_", 6))}`;
+	if (action.startsWith("sandbox_")) return "sandbox"; // 起容器是重动作：amber 串行防抖动
 	return action;
 }
 
@@ -330,6 +393,16 @@ async function invokeTool(action, args, agentId) {
 	}
 	if (route.kind === "spoor") {
 		return mcpCall(route.url, route.tool, args);
+	}
+	if (route.kind === "sandbox") {
+		try {
+			return { ok: true, result: await sandboxInvoke(route, args) };
+		} catch (err) {
+			// 异常穿透（第一铲契约四魂之一）：serializeError 带 __type 类路径过 HTTP 边界，
+			// 调用端 reviveError 能重 raise 真实类型——壳只透传，不吞不包
+			const wire = serializeError(err);
+			return { error: wire.message, errorDetail: wire };
+		}
 	}
 	return { error: `内部错误：未知提供者类型 ${route.kind}` };
 }

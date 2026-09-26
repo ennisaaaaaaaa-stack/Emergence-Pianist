@@ -53,7 +53,7 @@ Environment knobs (all optional): `PIANIST_SHELL_URL`, `PIANIST_AGENT_ID`, `PIAN
 ## Tests
 
 ```bash
-npm test          # 5 suites, deterministic, no API key needed
+npm test          # 12 suites, deterministic, no API key needed (sandbox-shell suite needs a local docker daemon)
 npm run test:live # real-model end-to-end (spends tokens, manual)
 ```
 
@@ -61,7 +61,7 @@ npm run test:live # real-model end-to-end (spends tokens, manual)
 
 Sandboxed execution, first cut (施工⑤): `src/sandbox.mjs` ships `SandboxManager` — an 8-method, SWE-ReX-shaped contract (sessions / one-shot `execute` / files / lifecycle) over a hardened container engine: one session = one docker container (`--cap-drop ALL`, `no-new-privileges`, non-root with host-uid alignment, 512m / 1 cpu / 256 pids caps, zero port publishing, `pianist-sandbox=1` owner label, `docker rm -f` on close). Contract souls: errors cross boundaries with their class path (`__type`) and revive into real types; `X-Request-ID` makes retries idempotent; sessions live in the manager process, so a dropped connection never kills a running command.
 
-Scope of this cut: container engine only — `microvm` is a reserved discriminated-union slot that throws "not implemented in this iteration"; shell wiring (`/sandbox` routes) lands in the next cut. Zero-credential rule: nothing from the host environment (keys included) is ever injected into a sandbox — credentials live only on the host. Tests: `node --test test/sandbox-engine-test.mjs` (needs a local docker daemon; not part of `npm test`).
+Scope of this cut: container engine + shell wiring (施工⑤ second cut) — `sandbox_*` actions route through the same `/tools/invoke` entrance into a lazy shell-level `SandboxManager` singleton (zero overhead until first use), under the existing three-tier approval sight: `rm -rf` / escape attempts / cloud-metadata probes (169.254.169.254) still gate on human approval; container-side downloads (`npm install`, `curl`) stay amber as normal workflow. Errors cross the HTTP boundary with their class path (`errorDetail.__type`) for client-side revival; `X-Request-ID` idempotency is carried by the manager's internal request cache. `microvm` remains a reserved discriminated-union slot that throws "not implemented in this iteration". Zero-credential rule: nothing from the host environment (keys included) is ever injected into a sandbox — credentials live only on the host. Tests: engine face via `node --test test/sandbox-engine-test.mjs`; shell wiring via `test/sandbox-shell-test.mjs` (part of `npm test`). Both need a local docker daemon.
 
 ## Conductor (resident)
 

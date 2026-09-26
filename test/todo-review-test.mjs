@@ -37,7 +37,9 @@ fs.writeFileSync(path.join(tmp, "workbench", "proj-b", "STATUS.md"), [
 fs.mkdirSync(path.join(tmp, "workbench", "proj-c"), { recursive: true }); // 无 STATUS.md 的目录不进牌面
 fs.writeFileSync(path.join(tmp, "workbench", "unrelated.txt"), "junk");
 
-const envA = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: tmp, CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmp, "state"), CONDUCTOR_IDLE_NOW: "1" };
+// 预算闸隔离：dailySpendYen 默认读仓内真实 data/telemetry——真机当天烧≥2 元会硬停拦住抽卡，
+// 测试被真实账本劫持。指到 tmp 空账本（与 queue-e2e 的隔离姿势同款）。
+const envA = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: tmp, CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmp, "state"), CONDUCTOR_IDLE_NOW: "1", PIANIST_TELEMETRY_DIR: path.join(tmp, "tel") };
 const outA = execFileSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envA, encoding: "utf8" });
 check("场景A：抽到 todo-review 且牌面行数=3（2条目+1旧格式）", outA.includes("todo-review") && outA.includes("牌面 3 行/2 项目"), outA.trim().split("\n").pop());
 
@@ -50,13 +52,13 @@ check("场景A2：prompt 模板含三件套判据与跳过语义（拉不到≠�
 const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), "todo-review-empty-"));
 fs.mkdirSync(path.join(tmpB, "workbench", "proj-x"), { recursive: true });
 fs.writeFileSync(path.join(tmpB, "workbench", "proj-x", "STATUS.md"), "# STATUS\n## 下一步\n\n## 卡在哪\n- 无\n");
-const envB = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: tmpB, CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmpB, "state"), CONDUCTOR_IDLE_NOW: "1" };
+const envB = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: tmpB, CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmpB, "state"), CONDUCTOR_IDLE_NOW: "1", PIANIST_TELEMETRY_DIR: path.join(tmpB, "tel") };
 const outB = execFileSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envB, encoding: "utf8" });
 check("场景B：空段=真无债（0 行但不是降级）", outB.includes("牌面 0 行/1 项目"), outB.trim().split("\n").pop());
 
 // ---- 场景C：workbench 根不存在——降级 null 出声 ----
 const tmpC = fs.mkdtempSync(path.join(os.tmpdir(), "todo-review-degraded-"));
-const envC = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: path.join(tmpC, "no-such-root"), CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmpC, "state"), CONDUCTOR_IDLE_NOW: "1" };
+const envC = { ...process.env, CONDUCTOR_STIGMERGY_ROOT: path.join(tmpC, "no-such-root"), CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmpC, "state"), CONDUCTOR_IDLE_NOW: "1", PIANIST_TELEMETRY_DIR: path.join(tmpC, "tel") };
 const runC = spawnSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envC, encoding: "utf8" });
 const outC = runC.stdout + "\n" + runC.stderr; // 降级 warn 在 stderr——必须并流才看得见
 check("场景C：不可读=降级出声（拉不到≠没有）", outC.includes("todo-review 牌面预取失败") && outC.includes("预取失败降级"), outC.trim().split("\n").filter((l) => l.includes("抽卡"))[0]);
