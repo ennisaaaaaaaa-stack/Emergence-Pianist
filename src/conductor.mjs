@@ -217,14 +217,21 @@ function unitSelfCheck(cgroupFile = "/proc/self/cgroup", systemctlCmd = process.
 // 不会静默跳过任何一条；DESC+max 是快照语义，与「消费进度」的承诺不符。
 async function fetchEnvEvents(lastId) {
 	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "the-remote";
+	const SSH_BIN = process.env.CONDUCTOR_SSH_BIN ?? "ssh"; // 测试替身：复刻双层 shell 解析的 ssh stub
+	const DB = process.env.CONDUCTOR_MEMORY_DB ?? "~/memory/mcp_memory.db"; // 测试指夹具库
 	// 表名可配：开源仓默认 event-queue（脱敏名）；私有部署在 /etc/pianist/conductor.env 写
 	// CONDUCTOR_EVENT_TABLE=event-queue 指回真表。引号包裹必须留——横杠表名裸写=SQL语法错
 	//（508753a 的脱敏名替换曾伤到此处功能面，the author 9/26 复验 563a1c1 时补获）。
 	const TABLE = (process.env.CONDUCTOR_EVENT_TABLE ?? "event-queue").replace(/"/g, "");
 	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM "${TABLE}" WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
+	// 引号嵌套坑（09-28 wander 验尸 00:14 预取红）：整条 SQL 包在远端命令的外层双引号里，经 ssh
+	// 交远端 shell 再解析一次——q 里的 " 会被当成外层闭口吃掉，横杠表名剥引号=SQL语法错
+	//（journal: near "-": syntax error）。私有部署真名若不带横杠则症状隐形——剥掉引号照样
+	// 合法——f648274 的「空集干净」验证因此漏网。内层 " 一律转义成 \\"，双层解析后原样送达。
+	const remote = `sqlite3 -json ${DB} "${q.replaceAll('"', '\\"')}"`;
 	const { execFile } = await import("node:child_process");
 	return new Promise((resolve) => {
-		execFile("ssh", [SSH, `sqlite3 -json ~/memory/mcp_memory.db "${q}"`], { timeout: 20_000 }, (err, stdout) => {
+		execFile(SSH_BIN, [SSH, remote], { timeout: 20_000 }, (err, stdout) => {
 			if (err) {
 				console.warn(`[conductor] env-event 队列预取失败——空牌面降级（拉不到不等于没有）: ${err.message}`);
 				resolve(null); // null=预取失败（降级）；[]=无新事件
