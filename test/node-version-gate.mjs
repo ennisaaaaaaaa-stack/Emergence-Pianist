@@ -8,7 +8,7 @@ const major = Number.parseInt(process.versions.node.split(".")[0], 10);
 if (!(major >= 22)) {
 	console.error(`[node-version-gate] PATH 里的 node 是 v${process.versions.node}，engines 契约要求 >=22——测试链不再往下跑。`);
 	console.error("  死状预告：不设门时会炸在 undici/webidl 深处的 TypeError，不是那儿的错。");
-	console.error("  正例：PATH=/.local/bin:$PATH npm test（本机已知 v22.22.2；或把 node>=22 排到 PATH 前列）。");
+	console.error("  正例：PATH=<node22-dir>:$PATH npm test（把 node>=22 排到 PATH 前列即可）。");
 	process.exit(1);
 }
 console.log(`[node-version-gate] node v${process.versions.node} ✓（engines >=22）`);

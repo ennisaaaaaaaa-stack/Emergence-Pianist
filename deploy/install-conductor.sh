@@ -39,7 +39,7 @@ run() { # run <cmd>... —— dry-run 只打印，真跑执行
 # 落进 unit 的就是它，版本错位结构性复现（19连抽钉子钉了爹漏了儿子的安装器这半）。
 # 解析出的 node 不达 >=22 → 大声死，明示用 CONDUCTOR_NODE_BIN 指正典。
 NODE_MAJOR="$("$NODE_BIN" --version 2>/dev/null | grep -oE "v[0-9]+" | tr -d v | head -1)"
-[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge 22 ]] || die "node 版本不达 >=22：$NODE_BIN（解析得 ${NODE_MAJOR:-无}）——engines 契约挡门。正例：CONDUCTOR_NODE_BIN=NODE_BIN bash deploy/install-conductor.sh"
+[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge 22 ]] || die "node 版本不达 >=22：$NODE_BIN（解析得 ${NODE_MAJOR:-无}）——engines 契约挡门。正例：CONDUCTOR_NODE_BIN=<your-node-22-path> bash deploy/install-conductor.sh"
 
 # ---- 前置体检：缺一样就大声死，不装哑巴 ----
 [[ -f "$UNIT_SRC" ]] || die "unit 源不存在：$UNIT_SRC"

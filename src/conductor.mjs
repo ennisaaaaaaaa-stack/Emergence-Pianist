@@ -219,7 +219,7 @@ async function fetchEnvEvents(lastId) {
 	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "the-remote";
 	// 表名可配：开源仓默认 event-queue（脱敏名）；私有部署在 /etc/pianist/conductor.env 写
 	// CONDUCTOR_EVENT_TABLE=event-queue 指回真表。引号包裹必须留——横杠表名裸写=SQL语法错
-	//（508753a 脱敏替换 event-queue→event-queue 伤到功能面，the author 9/26 复验 33adc97 时补获）。
+	//（508753a 的脱敏名替换曾伤到此处功能面，the author 9/26 复验 563a1c1 时补获）。
 	const TABLE = (process.env.CONDUCTOR_EVENT_TABLE ?? "event-queue").replace(/"/g, "");
 	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM "${TABLE}" WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
 	const { execFile } = await import("node:child_process");
