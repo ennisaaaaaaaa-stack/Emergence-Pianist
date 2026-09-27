@@ -82,6 +82,8 @@ const ACTION_RISK = {
 	sandbox_read_file: "silent", // 沙箱内文件面——隔离环境内读写不碰宿主
 	sandbox_write_file: "silent",
 	sandbox_upload: "silent",
+	// 认领报备（T3）：报备是出声动作不是写动作——不进审批、不进写队列，只进通知环
+	notify_claim: "silent",
 };
 
 /** 分层判定：red / amber / silent */
@@ -129,6 +131,8 @@ const ACTION_HUMAN = {
 	sandbox_read_file: "读沙箱容器里的文件",
 	sandbox_write_file: "往沙箱容器里写文件",
 	sandbox_upload: "往沙箱容器批量上传文件",
+	// 认领报备（T3）
+	notify_claim: "分身认领报备",
 };
 
 const ACTION_IMPACT = {
@@ -153,6 +157,7 @@ const ACTION_IMPACT = {
 	sandbox_read_file: "只读沙箱内文件，不碰宿主",
 	sandbox_write_file: "只写沙箱内文件，不碰宿主",
 	sandbox_upload: "只写沙箱内文件，不碰宿主",
+	notify_claim: "只进通知环报备一声，不写任何东西",
 };
 
 const BASH_HUMAN = {
@@ -346,6 +351,22 @@ export class NotifyRing {
 			agent: agent ?? "unknown",
 			summary: describe(action, payload, intent),
 			impact: impactOf(action, payload),
+		};
+		this.items.push(n);
+		if (this.items.length > this.cap) this.items.splice(0, this.items.length - this.cap);
+		return n;
+	}
+
+	/** 认领报备（T3 notify_claim）：summary 是 agent 自述一句话，不走 describe 模板——报备的正文就是原话，再套人话模板会盖掉。带 action 位供 /notify/since 消费端区分形状 */
+	claim(agent, summary, ticket) {
+		const n = {
+			id: `nt_${Date.now().toString(36)}_${++this.seq}`,
+			ts: new Date().toISOString(),
+			action: "notify_claim",
+			agent: agent ?? "unknown",
+			summary: String(summary).slice(0, 500),
+			ticket: ticket ?? null,
+			impact: impactOf("notify_claim"),
 		};
 		this.items.push(n);
 		if (this.items.length > this.cap) this.items.splice(0, this.items.length - this.cap);

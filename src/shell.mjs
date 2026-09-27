@@ -282,6 +282,9 @@ const TOOL_ROUTES = {
 	sandbox_upload: { kind: "sandbox", method: "upload" },
 	sandbox_is_alive: { kind: "sandbox", method: "isAlive" },
 	sandbox_close: { kind: "sandbox", method: "close" },
+
+	// 认领报备（T3）：壳本地动作——不路由到外部提供者，见 invokeTool 的 claim 分支
+	notify_claim: { kind: "claim" },
 };
 
 /** 路径参数展开：grimoire_tag 需要 {tag}、grimoire_skill 需要 {id}（或 name） */
@@ -379,6 +382,9 @@ async function queuedInvoke(action, args, agentId, intent) {
 // /tools/invoke 统一入口
 // ---------------------------------------------------------------------------
 
+/** 形状错误（4xx 面）：动作参数形状不对——/tools/invoke 回 HTTP 400，不静默吞掉 */
+class InvokeShapeError extends Error {}
+
 async function invokeTool(action, args, agentId) {
 	const route = TOOL_ROUTES[action];
 	if (!route) {
@@ -403,6 +409,18 @@ async function invokeTool(action, args, agentId) {
 			const wire = serializeError(err);
 			return { error: wire.message, errorDetail: wire };
 		}
+	}
+	if (route.kind === "claim") {
+		// notify_claim（T3）：认领共识报备——silent 档只进通知环，不写任何东西。
+		// 形状错（缺 summary / ticket 非字符串）抛 InvokeShapeError → HTTP 400，不静默
+		const p = args ?? {};
+		const summary = typeof p.summary === "string" ? p.summary.trim() : "";
+		if (!summary) throw new InvokeShapeError("notify_claim 缺必填字符串字段 payload.summary（认领了什么，一句话）");
+		if (p.ticket !== undefined && typeof p.ticket !== "string") {
+			throw new InvokeShapeError("notify_claim 的 payload.ticket 需为字符串（T 牌号或短标识）");
+		}
+		const n = notifyRing.claim(agentId, summary, p.ticket);
+		return { ok: true, notificationId: n.id };
 	}
 	return { error: `内部错误：未知提供者类型 ${route.kind}` };
 }
@@ -439,7 +457,9 @@ const server = http.createServer(async (req, res) => {
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify(out));
 		} catch (err) {
-			res.writeHead(502, { "content-type": "application/json" });
+			// 形状错回 400（调用方能改的错）；其余照旧 502（提供者侧的错）
+			const status = err instanceof InvokeShapeError ? 400 : 502;
+			res.writeHead(status, { "content-type": "application/json" });
 			res.end(JSON.stringify({ error: String(err?.message ?? err) }));
 		}
 		return;
