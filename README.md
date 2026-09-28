@@ -74,6 +74,8 @@ systemctl disable --now pianist-conductor && rm /etc/systemd/system/pianist-cond
 systemctl is-active pianist-conductor pianist-shell && node src/conductor.mjs --status  # check status (is-active + today's spend/draws as JSON)
 ```
 
+Rearm scavenger (canonical, `deploy/rearm-conductor.sh`): when the installer defers a restart because it lives inside the conductor's own cgroup, hang this via `systemd-run --collect` instead of hand-rolling a /tmp script. Its liveness probe reads `cgroup.procs` against `MainPID` — pi rewrites its argv to `pi`, so any `pgrep -f cli.js` probe is structurally blind (2026-09-29: such a blind scavenger killed a wander mid-report 20s after being hung). Read failures count as busy: it can only fire late, never early.
+
 ## Status
 
 Discovery loop shipped (telemetry → scanner → retropad → drafts) and teardown-tested. The candidate lifecycle (shadow / promote / reject, due budgets, exam fields) is not built yet — this repo tracks the first half of the loop only.

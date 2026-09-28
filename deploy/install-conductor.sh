@@ -132,7 +132,7 @@ run "$SYSTEMCTL" enable pianist-conductor
 # unit/env 已落位，重启延后（宿主机下次重启自然生效；或值班者收尾时补刀——先例：残骸清道夫）。
 OWN_UNIT="$(grep -oE '/[A-Za-z0-9@:_.-]+\.service' "$CGROUP_FILE" 2>/dev/null | head -1 | tr -d '/' || true)"
 if [[ "$OWN_UNIT" == "pianist-conductor.service" ]]; then
-	say "推迟 conductor 重启：安装进程活在它的 cgroup 里（own=$OWN_UNIT，§1 钉子——restart 会自杀）。unit/env 已落位，重启待宿主重启或值班者补刀"
+	say "推迟 conductor 重启：安装进程活在它的 cgroup 里（own=$OWN_UNIT，§1 钉子——restart 会自杀）。unit/env 已落位，重启待宿主重启或值班者补刀——正典清道夫件：deploy/rearm-conductor.sh（systemd-run 挂它；探针是 cgroup.procs 对照 MainPID，别手搓 pgrep——pi 会把 argv 改写成 'pi'，pgrep 是瞎的）"
 else
 	run "$SYSTEMCTL" restart pianist-conductor
 fi
