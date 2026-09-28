@@ -174,8 +174,8 @@ function dailySpendYen() {
 	return { spend, n };
 }
 
-function drawPart() {
-	return PARTS[Math.floor(Math.random() * PARTS.length)];
+function drawPart(pool = PARTS) {
+	return pool[Math.floor(Math.random() * pool.length)];
 }
 
 // ---- 正典自检（seed①，2026-09-26 wander 认领）----
@@ -210,6 +210,13 @@ function unitSelfCheck(cgroupFile = "/proc/self/cgroup", systemctlCmd = process.
 	return { unit, enabled: "enabled", ok: true, reason: "正典在位且 enabled" };
 }
 
+// env-event 远端表名（单源）：开源仓默认脱敏名 event-queue；私有部署真名经
+// CONDUCTOR_EVENT_TABLE 注入（/etc/pianist/conductor.env）。饿死退避的「缝已改」判据
+// 也读它——表名变了=部署侧动过缝，退避自动解除重探（2026-09-29 wander）。
+function eventTable() {
+	return (process.env.CONDUCTOR_EVENT_TABLE ?? "event-queue").replace(/"/g, "");
+}
+
 // env-event 牌面预取：the-remote event-queue 里 replay_day IS NULL 的实时行（未回放消费的）。
 // 失败出声降级为空牌面（拉不到队列 ≠ 队列为空）——session 照拉，牌面标明降级原因。
 // 消费进度记在 conductor 自己的 state（last_env_event_id），不碰 event-queue（INSERT-only 界约）。
@@ -222,7 +229,7 @@ async function fetchEnvEvents(lastId) {
 	// 表名可配：开源仓默认 event-queue（脱敏名）；私有部署在 /etc/pianist/conductor.env 写
 	// CONDUCTOR_EVENT_TABLE=event-queue 指回真表。引号包裹必须留——横杠表名裸写=SQL语法错
 	//（508753a 的脱敏名替换曾伤到此处功能面，the author 9/26 复验 563a1c1 时补获）。
-	const TABLE = (process.env.CONDUCTOR_EVENT_TABLE ?? "event-queue").replace(/"/g, "");
+	const TABLE = eventTable();
 	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM "${TABLE}" WHERE replay_day IS NULL AND id > ${Number(lastId) || 0} ORDER BY id ASC LIMIT 5`;
 	// 引号嵌套坑（09-28 wander 验尸 00:14 预取红）：整条 SQL 包在远端命令的外层双引号里，经 ssh
 	// 交远端 shell 再解析一次——q 里的 " 会被当成外层闭口吃掉，横杠表名剥引号=SQL语法错
@@ -234,6 +241,12 @@ async function fetchEnvEvents(lastId) {
 		execFile(SSH_BIN, [SSH, remote], { timeout: 20_000 }, (err, stdout) => {
 			if (err) {
 				console.warn(`[conductor] env-event 队列预取失败——空牌面降级（拉不到不等于没有）: ${err.message}`);
+				// 病名出声（2026-09-29 wander 验尸 09-28 深夜三连红）：引号钉死后 SQL 已活到 sqlite，
+				// no such table = 远端库真名≠当前表名——修因在部署缝不在代码：env 写 CONDUCTOR_EVENT_TABLE。
+				// execFile 的 err.message 自带 stderr 尾行（journal 里那行 Error: in prepare 就是它）。
+				if (/no such table/i.test(`${err.message}\n${err.stderr ?? ""}`)) {
+					console.warn(`[conductor] 病名 no such table：远端库无表 "${TABLE}"——私有部署在 /etc/pianist/conductor.env 写 CONDUCTOR_EVENT_TABLE=<真表名> 后重启本服务（开源仓默认脱敏名 event-queue）`);
+				}
 				resolve(null); // null=预取失败（降级）；[]=无新事件
 			} else {
 				const parsed = stdout.trim() ? JSON.parse(stdout) : [];
@@ -392,7 +405,24 @@ async function tick() {
 		return { acted: false, why: "busy" };
 	}
 
-	const part = drawPart();
+	// env-event 饿死退避（2026-09-29 wander，09-28 深夜三连红验尸）：预取连续硬失败达阈值 →
+	// 当日(JST)停抽该 part。空牌确认跑不因重试而愈——每个空闲窗烧一场只为说「拉不到」，恢复靠修因。
+	// 表名缝一改（CONDUCTOR_EVENT_TABLE 变值）即自动解除重探：装的时候看得见，修的时候不用惦记 state。
+	const BACKOFF_AFTER = Number(process.env.CONDUCTOR_ENV_BACKOFF_AFTER ?? 3);
+	const TABLE_NOW = eventTable();
+	if (st.env_event_backoff_day && st.env_event_backoff_table !== undefined && st.env_event_backoff_table !== TABLE_NOW) {
+		console.log(`[conductor] env-event 退避缝已改（${st.env_event_backoff_table} → ${TABLE_NOW}）——清退避重探`);
+		delete st.env_event_fail_streak; delete st.env_event_backoff_day; delete st.env_event_backoff_table;
+		st.days[today] = day; saveState(st);
+	}
+	const envBackoff = st.env_event_backoff_day === today && PARTS.some((p) => p.id === "env-event");
+	if (envBackoff && PARTS.every((p) => p.id === "env-event")) {
+		console.log(`[conductor] env-event 今日退避（连续 ${st.env_event_fail_streak ?? "?"} 次预取硬失败，backoff_day=${today}）且无他牌——本轮不抽。修因：no such table → /etc/pianist/conductor.env 写 CONDUCTOR_EVENT_TABLE=<真表名>（次日自动重探）`);
+		st.days[today] = day; saveState(st);
+		return { acted: false, why: "env-event-backoff" };
+	}
+	if (envBackoff) console.log(`[conductor] env-event 今日退避（连续 ${st.env_event_fail_streak ?? "?"} 次预取硬失败）——本轮从其余 ${PARTS.length - 1} 牌里抽`);
+	const part = drawPart(envBackoff ? PARTS.filter((p) => p.id !== "env-event") : PARTS);
 	day.draws += 1;
 
 	// env-event：拉起前预取牌面（失败降级空牌面，session 照拉）
@@ -401,6 +431,19 @@ async function tick() {
 	if (part.id === "env-event") {
 		events = await fetchEnvEvents(st.last_env_event_id ?? 0);
 		prompt = part.prompt(events);
+		// 预取硬失败计数：连续 N 次→当日退避（阈值起效的那场照跑——已经拉了；停的是之后的抽）。
+		// 次日 backoff_day 过期自然重探——报警声每日复发，不静默永停。
+		if (events === null) {
+			st.env_event_fail_streak = (st.env_event_fail_streak ?? 0) + 1;
+			if (st.env_event_fail_streak >= BACKOFF_AFTER) {
+				st.env_event_backoff_day = today;
+				st.env_event_backoff_table = TABLE_NOW;
+				console.warn(`[conductor] env-event 连续 ${st.env_event_fail_streak} 次预取硬失败——今日退避停抽（次日自动重探）。修因见「病名 no such table」行，不在重试`);
+			}
+		} else {
+			st.env_event_fail_streak = 0;
+			delete st.env_event_backoff_day; delete st.env_event_backoff_table;
+		}
 	}
 	// todo-review：拉起前预取 workbench「下一步」牌面（失败降级空牌面，session 照拉）
 	let board = undefined;

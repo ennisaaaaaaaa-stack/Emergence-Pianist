@@ -290,9 +290,12 @@ function registerBridgeTools(pi: ExtensionAPI) {
 			const out = await shellFetch("/tools/invoke", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
+				// agent 必须随调用过线（2026-09-29 wander）：壳的审批卡片/通知环/notify_claim 全靠这个
+				// 字段记「谁在调」——丢了署名，T3 认领报备就报给 nobody（red 卡片同理）。
 				body: JSON.stringify({
 					action: (params as { action?: string }).action,
 					payload: (params as { payload?: unknown }).payload,
+					agent: AGENT_ID,
 				}),
 			});
 			return {

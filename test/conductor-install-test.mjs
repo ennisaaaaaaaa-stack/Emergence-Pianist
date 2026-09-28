@@ -61,6 +61,18 @@ check("真跑（旁路 tmp）：落地 unit 是模板展开结果（占位符已
 const again = spawnSync("bash", [INSTALL], { env: over, encoding: "utf8" });
 check("幂等：同参数二跑 exit=0 不炸", again.status === 0, (again.stderr || "").trim().slice(0, 200));
 
+// ---- 5b. 表名缝（2026-09-29 wander）：无值时落注释行提示；有值时保全不因重装蒸发 ----
+check("表名缝：无值时 env 落注释行（装时看得见，出病时搜得到）",
+	envOk && /^# CONDUCTOR_EVENT_TABLE=/m.test(fs.readFileSync(tmpEnv, "utf8")),
+	(fs.readFileSync(tmpEnv, "utf8").match(/^# CONDUCTOR_EVENT_TABLE=.*/m) || ["(无注释行)"])[0]);
+fs.appendFileSync(tmpEnv, "CONDUCTOR_EVENT_TABLE=real-events\n");
+const againT = spawnSync("bash", [INSTALL], { env: over, encoding: "utf8" });
+check("表名缝：文件里有值重装保全（当前环境未带不抹掉）",
+	againT.status === 0 && fs.readFileSync(tmpEnv, "utf8").includes("CONDUCTOR_EVENT_TABLE=real-events") && againT.stdout.includes("保全既有表名行"),
+	(againT.stdout.match(/保全既有表名行[^\n]*/) || ["(无保全行)"])[0]);
+const withAmbient = spawnSync("bash", [INSTALL], { env: { ...over, CONDUCTOR_EVENT_TABLE: "ambient-table" }, encoding: "utf8" });
+check("表名缝：当前 env 优先于文件既有值", withAmbient.status === 0 && fs.readFileSync(tmpEnv, "utf8").includes("CONDUCTOR_EVENT_TABLE=ambient-table"));
+
 // ---- 6. .gitignore 防呆：env 模式兜得住（万一有人把 conductor.env 拷进 repo） ----
 const gi = spawnSync("git", ["check-ignore", "-q", "deploy/conductor.env"], { cwd: CWD, encoding: "utf8" });
 check(".gitignore：deploy/conductor.env 被兜住（*.env 模式）", gi.status === 0, (gi.stderr || "").trim());

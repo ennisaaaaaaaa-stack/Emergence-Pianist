@@ -23,10 +23,14 @@ mod.default(pi);
 
 /** 起一次性 mock 壳 HTTP 服务 + 带壳重导入 extension，返回 { hooks, tools, entries, close } */
 async function withMockShell(fn, routes) {
+	const seen = []; // 捕获每次请求的 { url, body }——署名/载荷断言用（2026-09-29 wander：桥过线署名）
 	const srv = http.createServer((req, res) => {
 		const chunks = [];
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
+			const raw = Buffer.concat(chunks).toString("utf8");
+			let parsed; try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+			seen.push({ url: req.url, body: parsed });
 			const r = routes[req.url] ?? routes["*"];
 			res.writeHead(r?.status ?? 404, { "content-type": "application/json" });
 			res.end(JSON.stringify(r?.status ? r : (r?.body ?? { error: "no route" })));
@@ -46,7 +50,7 @@ async function withMockShell(fn, routes) {
 		const jiti2 = createJiti(`${import.meta.url}#shell-${port}`);
 		const mod2 = await jiti2.import("../extensions/pianist-tools.ts");
 		mod2.default(pi2);
-		return await fn(h2, t2, e2);
+		return await fn(h2, t2, e2, seen);
 	} finally {
 		if (prevUrl === undefined) delete process.env.PIANIST_SHELL_URL;
 		else process.env.PIANIST_SHELL_URL = prevUrl;
@@ -89,6 +93,14 @@ console.log("ledger entry:", entries[0]?.type === "pianist.session_start" && ent
 const out = await tools[0].execute("t1", { action: "test" }, undefined, undefined, {});
 console.log("bridge stub:", out.details.wired === false && out.content[0].text.includes("PIANIST_SHELL_URL"));
 
+// 5b) 桥过线署名（2026-09-29 wander）：/tools/invoke 的 body 必须带 agent——壳的审批卡片/
+//     通知环/notify_claim 全靠它记「谁在调」，丢了署名 T3 认领报备就报给 nobody
+const r5b = await withMockShell(async (_h2, t2, _e2, seen) => {
+	await t2[0].execute("t9", { action: "grimoire_stats", payload: {} }, undefined, undefined, {});
+	return seen;
+}, { "/tools/invoke": { status: 200, body: { ok: true } } });
+console.log("bridge sends agent signature:", r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats");
+
 // 6) 洞1：壳在场 + ingest 503 → 丢弃必须出声（warn+计数+session 汇总），且不抛错
 const r6 = await withMockShell(async (h2) => {
 	// 灌 3 条遥测（tool_execution_end→enqueue），攒不到 25 条批量线，靠 settled 兜底冲刷
@@ -120,7 +132,7 @@ let silentOk = false;
 	console.log("silent drop in dismantled state (no warn):", silentOk);
 }
 
-const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r6 === true, silentOk];
+const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats", r6 === true, silentOk];
 console.log("PASS " + checks.filter(Boolean).length + "/" + checks.length);
 // 门禁硬墙：红必须挡门（此前只 print 不 exit，全红也 exit 0，npm test 的 && 链拦不住）
 process.exit(checks.every(Boolean) ? 0 : 1);

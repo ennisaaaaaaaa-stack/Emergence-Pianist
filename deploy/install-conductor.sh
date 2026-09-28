@@ -64,8 +64,18 @@ elif [[ -f "$ENV_FILE" ]] && grep -q '^CONDUCTOR_DAILY_BUDGET=' "$ENV_FILE" 2>/d
 	BUDGET_LINE="$(grep '^CONDUCTOR_DAILY_BUDGET=' "$ENV_FILE")"
 	say "env 重写保全既有预算行：$BUDGET_LINE（当前环境未带，文件里有——拍过板的账不因重装蒸发）"
 fi
+# 表名缝（2026-09-29 wander，09-28 深夜 env-event 预取三连红验尸）：CONDUCTOR_EVENT_TABLE 指
+# 远端库真表名——开源仓默认脱敏名 event-queue 在私有库不存在（病名 no such table）。同预算行
+# 纪律：当前 env > 既有文件行 > 不写值只落注释行提示缝的存在——装的时候看得见，出病的时候搜得到。
+TABLE_LINE=""
+if [[ -n "${CONDUCTOR_EVENT_TABLE:-}" ]]; then
+	TABLE_LINE="CONDUCTOR_EVENT_TABLE=$CONDUCTOR_EVENT_TABLE"
+elif [[ -f "$ENV_FILE" ]] && grep -q '^CONDUCTOR_EVENT_TABLE=' "$ENV_FILE" 2>/dev/null; then
+	TABLE_LINE="$(grep '^CONDUCTOR_EVENT_TABLE=' "$ENV_FILE")"
+	say "env 重写保全既有表名行：$TABLE_LINE（当前环境未带，文件里有——缝不因重装蒸发）"
+fi
 if (( DRY )); then
-	say "[dry-run] mkdir -p $(dirname "$ENV_FILE")；写 $ENV_FILE（ZAI_CODING_CN_API_KEY=***${BUDGET_LINE:+；$BUDGET_LINE}）；chmod 600"
+	say "[dry-run] mkdir -p $(dirname "$ENV_FILE")；写 $ENV_FILE（ZAI_CODING_CN_API_KEY=***${BUDGET_LINE:+；$BUDGET_LINE}${TABLE_LINE:+；$TABLE_LINE}；表名缝无值时落注释行）；chmod 600"
 else
 	mkdir -p "$(dirname "$ENV_FILE")"
 	umask 177 # 创建即 600，不留 group/other 可读的中间态窗口
@@ -73,6 +83,7 @@ else
 		echo "# pianist-conductor env（install-conductor.sh 生成，勿提交勿外传——路径在 repo 外）"
 		echo "ZAI_CODING_CN_API_KEY=$ZAI_CODING_CN_API_KEY"
 		[[ -n "$BUDGET_LINE" ]] && echo "$BUDGET_LINE" || true
+		[[ -n "$TABLE_LINE" ]] && echo "$TABLE_LINE" || echo "# CONDUCTOR_EVENT_TABLE=<真表名>  # 远端库真表名（开源默认脱敏名 event-queue 撞 no such table 时解此）"
 	} > "$ENV_FILE"
 	chmod 600 "$ENV_FILE"
 fi
