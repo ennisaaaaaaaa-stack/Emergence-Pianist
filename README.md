@@ -76,6 +76,8 @@ systemctl is-active pianist-conductor pianist-shell && node src/conductor.mjs --
 
 Rearm scavenger (canonical, `deploy/rearm-conductor.sh`): when the installer defers a restart because it lives inside the conductor's own cgroup, hang this via `systemd-run --collect` instead of hand-rolling a /tmp script. Its liveness probe reads `cgroup.procs` against `MainPID` — pi rewrites its argv to `pi`, so any `pgrep -f cli.js` probe is structurally blind (2026-09-29: such a blind scavenger killed a wander mid-report 20s after being hung). Read failures count as busy: it can only fire late, never early.
 
+Board-face cooldown for spoor-session (2026-09-30): when a spawned spoor-session retires cleanly (`exit=0`), the conductor records a sha256 fingerprint of the exact board it judged on the launch record (`faceHash`). While the board is byte-identical and within the cooldown window (`CONDUCTOR_SPOOR_FACE_COOLDOWN_H`, default 12h), the part is excluded from draws — an unchanged board re-judged is an empty-card confirmation run, same disease family as the env-event backoff. Any byte of board change, cooldown expiry, or a non-zero exit restores eligibility immediately (verdicts are time-sensitive: deadlines walk, upstream packages arrive). Reinstall-seam discipline is generalized in `deploy/install-conductor.sh`: every existing `CONDUCTOR_*` line in `/etc/pianist/conductor.env` survives a rewrite (current env > file line), so no seam evaporates on reinstall.
+
 ## Status
 
 Discovery loop shipped (telemetry → scanner → retropad → drafts) and teardown-tested. The candidate lifecycle (shadow / promote / reject, due budgets, exam fields) is not built yet — this repo tracks the first half of the loop only.

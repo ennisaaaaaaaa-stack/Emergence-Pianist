@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const args = process.argv.slice(2);
 function arg(name, dflt) {
@@ -268,7 +269,7 @@ async function fetchEnvEvents(lastId) {
 // 判据文字已进 prompt，骨架未动——「只换判据不动骨架」照旧成立。
 // spoor-session 同源吃 boards（按项目结构化条目+排序确认段头）；三件套机判在 judgeSpoorBoard。
 // 读不到=降级 null（拉不到清单≠清单为空）；空段=[]=真无债可审。
-function fetchTodoBoard(partId = "todo-review") {
+function fetchTodoBoard(partId = "todo-review", quiet = false) {
 	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "Stigmergy");
 	const wb = path.join(root, "workbench");
 	const lines = [];
@@ -307,7 +308,7 @@ function fetchTodoBoard(partId = "todo-review") {
 			if (entries.length || confirmed) boards.push({ project: dir, confirmed, entries });
 		}
 	} catch (e) {
-		console.warn(`[conductor] ${partId} 牌面预取失败——空牌面降级（拉不到不等于没有）: ${e?.message ?? e}`);
+		if (!quiet) console.warn(`[conductor] ${partId} 牌面预取失败——空牌面降级（拉不到不等于没有）: ${e?.message ?? e}`);
 		return null;
 	}
 	return { projects, lines, boards };
@@ -351,6 +352,12 @@ function judgeSpoorBoard(board) {
 		if (rows.length) groups.push({ project: b.project, confirmed: b.confirmed, rows });
 	}
 	return { groups, counts, projects: board.projects };
+}
+
+// 牌面指纹（sha256 前 16 位）：boards 结构全量——项目名、排序确认段头、条目原文，一字之动即换指纹。
+// 只指纹牌面不指纹裁决：裁决是分身的活，牌面才是「要不要再来一场」的机械依据。
+function faceHashBoard(board) {
+	return createHash("sha256").update(JSON.stringify(board.boards ?? [])).digest("hex").slice(0, 16);
 }
 
 function launchPart(part) {
@@ -422,7 +429,28 @@ async function tick() {
 		return { acted: false, why: "env-event-backoff" };
 	}
 	if (envBackoff) console.log(`[conductor] env-event 今日退避（连续 ${st.env_event_fail_streak ?? "?"} 次预取硬失败）——本轮从其余 ${PARTS.length - 1} 牌里抽`);
-	const part = drawPart(envBackoff ? PARTS.filter((p) => p.id !== "env-event") : PARTS);
+	// spoor-session 牌面指纹冷却（2026-09-30 wander，09-30 凌晨三连空牌验尸）：当夜 spoor×3+todo-review
+	// 四场烧 ~$1.4 全在一张没变的牌面上（三场 spoor 逐字重演同一套探索、同一句「值得动0」）。
+	// 门形：上一场 spoor-session 正常收工（exit=0）时记下的牌面指纹与本轮逐字相同，且距今 <
+	// 冷却窗 → 本轮不抽它。与 env-event 饿死退避同族——空牌确认跑不因重跑而愈；但裁决含时间维
+	// （到期日会走、上游包会到而牌面未必同步动），故牌面一字之变立即恢复资格、冷却窗过后
+	// 即使牌面未变也重探。读坏=不冷却（探针静默，降级不算事）。
+	const SPOOR_FACE_COOLDOWN_MS = Number(process.env.CONDUCTOR_SPOOR_FACE_COOLDOWN_H ?? 12) * 3600_000;
+	const lastSpoor = [...(st.launches ?? [])].reverse().find((l) => l.part === "spoor-session" && l.faceHash && l.exit === 0);
+	let pool = envBackoff ? PARTS.filter((p) => p.id !== "env-event") : PARTS;
+	if (lastSpoor && pool.some((p) => p.id === "spoor-session") && Date.now() - Date.parse(lastSpoor.ts) < SPOOR_FACE_COOLDOWN_MS) {
+		const probe = fetchTodoBoard("spoor-session", true); // 静默探针：只对指纹，读坏=不冷却
+		if (probe !== null && faceHashBoard(probe) === lastSpoor.faceHash) {
+			pool = pool.filter((p) => p.id !== "spoor-session");
+			console.log(`[conductor] spoor-session 牌面指纹未变（${lastSpoor.ts} 已裁，冷却窗 ${Math.round(SPOOR_FACE_COOLDOWN_MS / 3600000)}h 内）——本轮不抽 spoor-session`);
+			if (!pool.length) {
+				console.log(`[conductor] 可抽的牌全在冷却/退避——本轮不抽（账不动）。牌面一变或冷却窗过即恢复`);
+				st.days[today] = day; saveState(st);
+				return { acted: false, why: "pool-cooled" };
+			}
+		}
+	}
+	const part = drawPart(pool);
 	day.draws += 1;
 
 	// env-event：拉起前预取牌面（失败降级空牌面，session 照拉）
@@ -453,9 +481,11 @@ async function tick() {
 	}
 	// spoor-session：同源牌面 + 三件套机判结果一并注入（机判裁形状，分身裁值不值得动）
 	let spoor = undefined;
+	let spoorFaceHash = null;
 	if (part.id === "spoor-session") {
 		board = fetchTodoBoard("spoor-session");
 		spoor = board === null ? null : judgeSpoorBoard(board);
+		spoorFaceHash = board === null ? null : faceHashBoard(board); // 落进 launch 行：下场同牌面对指纹用
 		prompt = part.prompt(board, spoor);
 	}
 	// 抽卡出声：牌面摘要一行（各 part 自己的形状）
@@ -481,7 +511,7 @@ async function tick() {
 		console.warn(`[conductor] env-event 本轮吃满 5 条（至 #${maxEventId}）——队列可能仍有积压，靠后续轮次续消`);
 	}
 	st.days[today].launches += 1;
-	st.launches.push({ day: today, part: part.id, ts: new Date().toISOString(), exit: r.code, events: maxEventId });
+	st.launches.push({ day: today, part: part.id, ts: new Date().toISOString(), exit: r.code, events: maxEventId, ...(spoorFaceHash ? { faceHash: spoorFaceHash } : {}) });
 	if (st.launches.length > 200) st.launches.shift();
 	// 消费进度推进：只记 conductor 自己的 state，不碰 event-queue（只读界约）
 	if (maxEventId !== null) st.last_env_event_id = maxEventId;
