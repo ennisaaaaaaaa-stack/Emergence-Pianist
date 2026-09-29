@@ -73,6 +73,26 @@ check("表名缝：文件里有值重装保全（当前环境未带不抹掉）"
 const withAmbient = spawnSync("bash", [INSTALL], { env: { ...over, CONDUCTOR_EVENT_TABLE: "ambient-table" }, encoding: "utf8" });
 check("表名缝：当前 env 优先于文件既有值", withAmbient.status === 0 && fs.readFileSync(tmpEnv, "utf8").includes("CONDUCTOR_EVENT_TABLE=ambient-table"));
 
+// ---- 5c. 通用缝保全（2026-09-30 wander，部署前体检发现）：任意 CONDUCTOR_* 缝行不因重装蒸发 ----
+// 病例：fba4b11 落的 CONDUCTOR_SVPS_SSH 在只认预算/表名两行的重写里静默蒸发。
+// 测试环境剥净 CONDUCTOR_* 噪声（conductor 会话里带着 env 文件的键，不剥则不密封）。
+const tmpSeam = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-install-seam-"));
+const seamEnvF = path.join(tmpSeam, "pianist", "conductor.env");
+fs.mkdirSync(path.dirname(seamEnvF), { recursive: true });
+fs.writeFileSync(seamEnvF, "# old\nZAI_CODING_CN_API_KEY=stale\nCONDUCTOR_SVPS_SSH=the-remote-test-host\nCONDUCTOR_SPOOR_FACE_COOLDOWN_H=6\n");
+const seamClean = { ...process.env };
+for (const k of Object.keys(seamClean)) if (/^CONDUCTOR_/.test(k)) delete seamClean[k];
+const seamOver = { ...seamClean, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: seamEnvF, CONDUCTOR_UNIT_DEST: path.join(tmpSeam, "systemd"), CONDUCTOR_SYSTEMCTL: ":", CONDUCTOR_CGROUP_FILE: path.join(tmpSeam, "cg-none") };
+const seamRun = spawnSync("bash", [INSTALL], { env: seamOver, encoding: "utf8" });
+const seamText = seamRun.status === 0 ? fs.readFileSync(seamEnvF, "utf8") : "";
+check("缝保全：SVPS_SSH 等既有 CONDUCTOR_* 行重装不蒸发且出声",
+	seamRun.status === 0 && seamText.includes("CONDUCTOR_SVPS_SSH=the-remote-test-host") && seamText.includes("CONDUCTOR_SPOOR_FACE_COOLDOWN_H=6") && seamRun.stdout.includes("保全既有缝行"),
+	(seamRun.stdout.match(/保全既有缝行[^\n]*/) || ["(无保全行)"])[0]);
+const seamRun2 = spawnSync("bash", [INSTALL], { env: { ...seamOver, CONDUCTOR_SVPS_SSH: "ambient-host" }, encoding: "utf8" });
+check("缝保全：当前 env 优先于文件既有值（同预算/表名纪律），其余缝行不动",
+	seamRun2.status === 0 && fs.readFileSync(seamEnvF, "utf8").includes("CONDUCTOR_SVPS_SSH=ambient-host") && fs.readFileSync(seamEnvF, "utf8").includes("CONDUCTOR_SPOOR_FACE_COOLDOWN_H=6"),
+	"");
+
 // ---- 6. .gitignore 防呆：env 模式兜得住（万一有人把 conductor.env 拷进 repo） ----
 const gi = spawnSync("git", ["check-ignore", "-q", "deploy/conductor.env"], { cwd: CWD, encoding: "utf8" });
 check(".gitignore：deploy/conductor.env 被兜住（*.env 模式）", gi.status === 0, (gi.stderr || "").trim());

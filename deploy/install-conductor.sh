@@ -74,6 +74,24 @@ elif [[ -f "$ENV_FILE" ]] && grep -q '^CONDUCTOR_EVENT_TABLE=' "$ENV_FILE" 2>/de
 	TABLE_LINE="$(grep '^CONDUCTOR_EVENT_TABLE=' "$ENV_FILE")"
 	say "env 重写保全既有表名行：$TABLE_LINE（当前环境未带，文件里有——缝不因重装蒸发）"
 fi
+# 通用缝保全（2026-09-30 wander，部署前体检发现）：env 重写曾只认预算/表名两行——
+# fba4b11 落的 CONDUCTOR_SVPS_SSH（env-event 预取的 ssh host 缝）重装即静默蒸发。
+# 同族纪律一般化：文件里任何 CONDUCTOR_* 键，当前 env 带 → 写当前值；未带 → 原行保全。
+# （只保全既有键不引入新键——新缝仍走显式添加，别让 session 环境顺手漏进正册。）
+EXTRA_ENV_LINES=""
+if [[ -f "$ENV_FILE" ]]; then
+	while IFS= read -r line; do
+		key="${line%%=*}"
+		[[ "$key" == "CONDUCTOR_DAILY_BUDGET" || "$key" == "CONDUCTOR_EVENT_TABLE" ]] && continue # 已按各自纪律处理
+		cur="${!key:-}"
+		if [[ -n "$cur" ]]; then
+			EXTRA_ENV_LINES+="$key=$cur"$'\n'
+		else
+			EXTRA_ENV_LINES+="$line"$'\n'
+			say "env 重写保全既有缝行：$line（当前环境未带，文件里有——缝不因重装蒸发）"
+		fi
+	done < <(grep -E '^CONDUCTOR_[A-Z0-9_]+=' "$ENV_FILE" 2>/dev/null || true)
+fi
 if (( DRY )); then
 	say "[dry-run] mkdir -p $(dirname "$ENV_FILE")；写 $ENV_FILE（ZAI_CODING_CN_API_KEY=***${BUDGET_LINE:+；$BUDGET_LINE}${TABLE_LINE:+；$TABLE_LINE}；表名缝无值时落注释行）；chmod 600"
 else
@@ -84,6 +102,7 @@ else
 		echo "ZAI_CODING_CN_API_KEY=$ZAI_CODING_CN_API_KEY"
 		[[ -n "$BUDGET_LINE" ]] && echo "$BUDGET_LINE" || true
 		[[ -n "$TABLE_LINE" ]] && echo "$TABLE_LINE" || echo "# CONDUCTOR_EVENT_TABLE=<真表名>  # 远端库真表名（开源默认脱敏名 event-queue 撞 no such table 时解此）"
+		[[ -n "$EXTRA_ENV_LINES" ]] && printf '%s' "$EXTRA_ENV_LINES" || true
 	} > "$ENV_FILE"
 	chmod 600 "$ENV_FILE"
 fi
