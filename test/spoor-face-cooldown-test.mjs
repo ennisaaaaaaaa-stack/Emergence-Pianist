@@ -54,6 +54,7 @@ function once(extra = {}) {
 			CONDUCTOR_STIGMERGY_ROOT: wbRoot,
 			CONDUCTOR_PI_BIN: piStub,
 			CONDUCTOR_DAILY_BUDGET: "999",
+			CONDUCTOR_HOTSPOT_OUT: path.join(tmp, "hotspots", "latest.json"), // 隔离热点心跳（非 dry 的 --once 会真扫真落盘）
 			...extra,
 		},
 		encoding: "utf8",
@@ -131,6 +132,7 @@ const r7 = spawnSync(process.execPath, [CONDUCTOR, "--once"], {
 		CONDUCTOR_STIGMERGY_ROOT: wbRoot,
 		CONDUCTOR_PI_BIN: piStub,
 		CONDUCTOR_DAILY_BUDGET: "999",
+		CONDUCTOR_HOTSPOT_OUT: path.join(tmp, "hotspots", "latest.json"), // 隔离热点心跳（场7 非 dry）
 	},
 	encoding: "utf8",
 });

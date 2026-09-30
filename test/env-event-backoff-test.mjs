@@ -48,6 +48,7 @@ function once(sshBin, extra = {}) {
 			CONDUCTOR_SVPS_SSH: "ignored-host",
 			CONDUCTOR_PI_BIN: piStub,
 			CONDUCTOR_DAILY_BUDGET: "999",
+			CONDUCTOR_HOTSPOT_OUT: path.join(tmp, "hotspots", "latest.json"), // 隔离热点心跳（非 dry 的 --once 会真扫真落盘）
 			...extra,
 		},
 		encoding: "utf8",

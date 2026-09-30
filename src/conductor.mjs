@@ -25,6 +25,20 @@ const IDLE_MS = Number(arg("idle-min", "30")) * 60_000;
 const TICK_MS = Number(arg("tick-sec", "60")) * 1000;
 const DAILY_BUDGET = Number(process.env.CONDUCTOR_DAILY_BUDGET ?? arg("daily-budget", "2"));
 
+// hotspot 心跳缝（2026-10-01 wander 认领 09-30 seed「发现闭环没有心跳」）：latest.json 只在
+// 有人记得时才重扫——停过五天。心跳=发现闭环自己的呼吸，挂在 conductor 常驻循环上：
+// 报告陈旧（默认 20h 窗）即扫。不进 part 池、不记 draws/launches、不进预算账（纯机械零 LLM）。
+// 为什么是 conductor 不是独立 systemd timer：本宅伤口大户是部署缝（09-28 引号/09-29 表名/
+// 09-30 SVPS_SSH 三连），第三对 unit+timer 平添安装/拆除/env 三处新缝；conductor 已常驻、
+// node 版本钉过、rearm 补刀件现成——心跳随它活。conductor 死 ⇔ 全宅黑（无新遥测），心跳的
+// 价值域与之同变，独立 timer 在死宅里扫旧账无意义。验收形状（seed 原文）：latest.json
+// 生成时间永不见 25h+。失败 5min 冷却重试：报警声保留，不刷屏也不静默（自愈式覆盖写）。
+const HOTSPOT_STALE_H_RAW = Number(process.env.CONDUCTOR_HOTSPOT_STALE_H ?? 20);
+const HOTSPOT_STALE_MS = (Number.isFinite(HOTSPOT_STALE_H_RAW) ? Math.max(0, HOTSPOT_STALE_H_RAW) : 20) * 3600_000; // 0h=测试强制陈旧；负数/垃圾回默认 20h
+const HOTSPOT_OUT = process.env.CONDUCTOR_HOTSPOT_OUT ?? path.join(CWD, "data", "hotspots", "latest.json");
+const HOTSPOT_DIR = process.env.CONDUCTOR_HOTSPOT_DIR ?? process.env.PIANIST_TELEMETRY_DIR ?? path.join(CWD, "data", "telemetry");
+const HOTSPOT_RETRY_MS = 5 * 60_000;
+
 function todayJST() {
 	return new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
 }
@@ -360,6 +374,55 @@ function faceHashBoard(board) {
 	return createHash("sha256").update(JSON.stringify(board.boards ?? [])).digest("hex").slice(0, 16);
 }
 
+// 报告除鷨度：读 HOTSPOT_OUT 的 generatedAt。缺失/坏 JSON/无时间部 = 无限陈旧（下一场扫描覆盖即自愈）。
+function hotspotReportAgeMs() {
+	try {
+		const j = JSON.parse(fs.readFileSync(HOTSPOT_OUT, "utf8"));
+		const t = Date.parse(j?.generatedAt);
+		return Number.isFinite(t) ? Date.now() - t : Infinity;
+	} catch {
+		return Infinity;
+	}
+}
+
+// hotspot 心跳（seed 抓手①）：报告陈旧即跑扫描器。成败都记账（state.last_hotspot_scan——
+// --status 面可见，心跳死没死不用翻 journal 猜）；失败挂 5min 重试冷却。dry-run 只彩排不落盘。
+async function heartbeatHotspotScan(st) {
+	if (st.hotspot_retry_after && Date.now() < Date.parse(st.hotspot_retry_after)) return { fired: false, why: "retry-cooldown" };
+	if (hotspotReportAgeMs() < HOTSPOT_STALE_MS) return { fired: false, why: "fresh" };
+	if (DRY) {
+		console.log(`[conductor] [dry-run] hotspot 心跳将扫描（报告陈旧 >${Math.round(HOTSPOT_STALE_MS / 3600000)}h）：node src/hotspot-scanner.mjs --dir ${HOTSPOT_DIR} --out ${HOTSPOT_OUT}（纯机械零 LLM，不记抽卡账）`);
+		return { fired: false, why: "dry" };
+	}
+	console.log(`[conductor] hotspot 心跳：报告陈旧（${HOTSPOT_OUT} 无重扫 >${Math.round(HOTSPOT_STALE_MS / 3600000)}h）→ 扫描器上膛（纯机械零 LLM，不记抽卡账）`);
+	const t0 = Date.now();
+	const r = await new Promise((resolve) => {
+		const c = spawn(process.execPath, [path.join(CWD, "src", "hotspot-scanner.mjs"), "--dir", HOTSPOT_DIR, "--out", HOTSPOT_OUT], {
+			cwd: CWD, stdio: ["ignore", "pipe", "pipe"],
+		});
+		let tail = "";
+		c.stdout.on("data", (d) => { tail += d.toString(); });
+		c.stderr.on("data", (d) => { tail += d.toString(); });
+		c.on("error", (e) => resolve({ code: -1, tail: String(e?.message ?? e) }));
+		c.on("close", (code) => resolve({ code, tail }));
+	});
+	let rep = null;
+	try { rep = JSON.parse(fs.readFileSync(HOTSPOT_OUT, "utf8")); } catch { /* 扫描器没写成：报告记 null 摘要 */ }
+	st.last_hotspot_scan = {
+		ts: new Date().toISOString(), exit: r.code, ms: Date.now() - t0,
+		hotspots: rep?.hotspots?.length ?? null, errorHotspots: rep?.errorHotspots?.length ?? null, out: HOTSPOT_OUT,
+	};
+	if (r.code !== 0) {
+		st.hotspot_retry_after = new Date(Date.now() + HOTSPOT_RETRY_MS).toISOString();
+		console.warn(`[conductor] hotspot 心跳失败 exit=${r.code}——${HOTSPOT_RETRY_MS / 60000}min 后重试（报警不刷屏也不静默）。尾 300 字：\n${r.tail.slice(-300)}`);
+	} else {
+		delete st.hotspot_retry_after;
+		console.log(`[conductor] hotspot 心跳收工：热点 ${st.last_hotspot_scan.hotspots}（错误热点 ${st.last_hotspot_scan.errorHotspots}）落 ${HOTSPOT_OUT}（${st.last_hotspot_scan.ms}ms）`);
+	}
+	saveState(st);
+	return { fired: true, exit: r.code };
+}
+
 function launchPart(part) {
 	return new Promise((resolve) => {
 		const env = {
@@ -392,6 +455,10 @@ async function tick() {
 	const st = loadState();
 	const today = todayJST();
 	const day = st.days[today] ?? { draws: 0, launches: 0, spend: 0, budgetHit: false };
+
+	// hotspot 心跳在一切早退之前（预算硬停/忙判/冷却都不拦它）：心跳不属抽卡账，预算死日
+	// 也不许发现闭环瞎掉；扫描器失败自己挂冷却，不碰下面的抽卡路径。
+	try { await heartbeatHotspotScan(st); } catch (e) { console.warn(`[conductor] hotspot 心跳异常（不拦抽卡）：${e?.message ?? e}`); }
 
 	const { spend, n } = dailySpendYen();
 	day.spend = spend;
@@ -537,7 +604,7 @@ async function main() {
 		const { spend, n } = dailySpendYen();
 		console.log(JSON.stringify({
 			today, budget: DAILY_BUDGET, spendToday: Number(spend.toFixed(4)), nSessionsToday: n,
-			day: st.days[today] ?? null, lastLaunches: (st.launches ?? []).slice(-5),
+			day: st.days[today] ?? null, lastLaunches: (st.launches ?? []).slice(-5), lastHotspotScan: st.last_hotspot_scan ?? null,
 		}, null, 1));
 		return;
 	}
