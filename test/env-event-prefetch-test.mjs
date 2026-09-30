@@ -62,5 +62,38 @@ const run2 = spawnSync(process.execPath, [CONDUCTOR, "--once", "--dry-run"], {
 check("CONDUCTOR_MEMORY_DB 缝生效（直接指夹具库也通）", run2.status === 0 && run2.stdout.includes("牌面 2 条（>0）"),
 	(run2.stdout.match(/抽卡[^\n]*/) || ["(无抽卡行)"])[0].slice(0, 160));
 
+// ---- prompt 分叉彩排（2026-10-01 wander，六场空牌猜动作名病历）：牌满/不可达/真空三分 ----
+// 演练面断言（[env-event-prompt] 行）：不可达文案必须明说「不要去探队列」（探过的缝不在分身座位上），
+// 真空文案必须明说「可达且无新事件」（不可达≠空）；纪律行必须明禁猜 pianist_bridge 动作名。
+check("彩排A：满牌面——演练面含牌面行（thread/cos/摘录）与禁猜纪律",
+	run.stdout.includes("[env-event-prompt]") && run.stdout.includes("- #1 cos=0.5 [test] row-seven")
+		&& run.stdout.includes("不猜 pianist_bridge 的动作名"),
+	run.stdout.split("\n").find((l) => l.includes("[env-event-prompt]")) ?? "(无彩排行)");
+
+// 不可达：ssh 替身直接非零退出（复刻预取硬失败）——events=null 分支
+const stubDead = path.join(tmp, "ssh-stub-dead");
+fs.writeFileSync(stubDead, "#!/bin/sh\necho 'Error: no such table: event-queue' >&2\nexit 1\n");
+fs.chmodSync(stubDead, 0o755);
+const envDead = { ...env, CONDUCTOR_STATE_DIR: path.join(tmp, "state-dead"), CONDUCTOR_SSH_BIN: stubDead };
+fs.mkdirSync(envDead.CONDUCTOR_STATE_DIR, { recursive: true });
+const runDead = spawnSync(process.execPath, [CONDUCTOR, "--once", "--dry-run"], { env: envDead, encoding: "utf8" });
+check("彩排B：不可达——降级文案明说「不要去探队列」+病名出声（no such table 指部署缝）",
+	runDead.status === 0 && runDead.stdout.includes("牌面 预取失败降级")
+		&& runDead.stdout.includes("不要去探队列") && runDead.stdout.includes("修因在部署侧"),
+	runDead.stdout.split("\n").find((l) => l.includes("[env-event-prompt]")) ?? "(无彩排行)");
+
+// 真空：夹具库只余已回放行——可达且无新事件分支（与不可达文案必须分叉，不能共用一句）
+const DB_EMPTY = path.join(tmp, "empty.db");
+const mkEmpty = spawnSync("sqlite3", [DB_EMPTY, `CREATE TABLE "event-queue" (id INTEGER, thread_id INTEGER, cosine REAL, signal_text TEXT, signal_source TEXT, logged_at TEXT, replay_day TEXT);
+INSERT INTO "event-queue" VALUES (8, 1, 0.5, 'row-eight-replayed', 'test', '2026-09-28T00:00:00Z', '2026-09-27');`], { encoding: "utf8" });
+check("真空夹具库就位", mkEmpty.status === 0, (mkEmpty.stderr || "").trim().slice(0, 120));
+const envEmpty = { ...env, CONDUCTOR_STATE_DIR: path.join(tmp, "state-empty"), CONDUCTOR_MEMORY_DB: DB_EMPTY };
+fs.mkdirSync(envEmpty.CONDUCTOR_STATE_DIR, { recursive: true });
+const runEmpty = spawnSync(process.execPath, [CONDUCTOR, "--once", "--dry-run"], { env: envEmpty, encoding: "utf8" });
+check("彩排C：真空——牌面 0 条 + 文案明说「可达且无新事件」（不可达≠空，两文案不共用）",
+	runEmpty.status === 0 && runEmpty.stdout.includes("牌面 0 条（>0）")
+		&& runEmpty.stdout.includes("队列可达且无新事件") && !runEmpty.stdout.includes("不要去探队列"),
+	runEmpty.stdout.split("\n").find((l) => l.includes("[env-event-prompt]")) ?? "(无彩排行)");
+
 console.log(`\n${pass}/${total}`);
 process.exit(pass === total ? 0 : 1);

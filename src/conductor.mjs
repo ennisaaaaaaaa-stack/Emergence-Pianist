@@ -94,17 +94,23 @@ const PARTS_ALL = [
 	{
 		id: "env-event",
 		desc: "§九环境事件消费（event-queue 慢通道）",
-		// 牌面由 conductor 拉起前注入（events 参数）；队列不可达时降级为空牌面确认跑
+		// 牌面由 conductor 拉起前注入（events 参数）；队列不可达时降级为空牌面确认跑。
+		// 降级≠空队列，文案分叉（2026-10-01 wander，六场空牌病历）：09-25~09-30 六场空牌各自
+		// 猜一个不存在的桥动作名（event-queue.poll/status/probe/peek_env_event_queue/grimoire_event，
+		// 每场措辞各异——同型异辞，文本收敛门对它全瞎）去重探 conductor 已探过的队列。修因在
+		// prompt 没把「不可达」和「空」分开，也没明说「探不到的缝不在你座位上」。
 		prompt: (events) => [
 			"你是 Emergence Pianist 的环境事件分身（env-event part）。慢通道轮到你了：event-queue 里有实时环境唤起在排队，你的任务是消费这一批。",
 			"",
 			"本轮牌面（conductor 预取，含 thread_id/cosine/信号摘录）：",
 			events && events.length
 				? events.map((e) => `- #${e.thread_id} cos=${e.cosine} [${e.signal_source}] ${e.signal_text.slice(0, 80).replace(/\n/g, " ")} (${e.logged_at})`).join("\n")
-				: "（队列不可达或无新事件——本轮降级为空牌面确认跑，写 100 字以内的收尾笔记即可）",
+				: events === null
+					? "（队列不可达——conductor 预取时已经探过一次并失败：修因在部署侧（远端/表名），不在你的座位上，你换任何工具或动作名再探只会得到同一个结果。本轮降级为空牌面确认跑：写 100 字以内的收尾笔记即可，不要去探队列。）"
+					: "（队列可达且无新事件——真无事可消费，写 100 字以内的收尾笔记即可。）",
 			"",
 			"逐条判断：这条环境信号对pianist们最近的活动有没有实质关联——没有就明说「这条不接」；有关联的，把判断写进收尾笔记（200字以内）。",
-			"纪律：只消费不动账——event-queue 你只读不写；单 session 预算内闭环。",
+			"纪律：只消费不动账——event-queue 你只读不写；牌面由 conductor 预取，你不自己去拉队列、也不猜 pianist_bridge 的动作名（动作面在壳上不在你的牌上，猜不中——六场空牌各猜一个名字全败的病历见上）；单 session 预算内闭环。",
 		].join("\n"),
 	},
 	{
@@ -563,8 +569,10 @@ async function tick() {
 	console.log(`[conductor] 空闲 ${idleMin}min > ${IDLE_MS / 60000}min → 抽卡：${part.id}（${part.desc}）${note}`);
 	if (DRY) {
 		console.log(`[conductor] dry-run：不拉起，不记账。今日 draws=${day.draws}`);
-		// spoor-session 演练面：真注入的 prompt 整段出声——dry-run 即完整彩排（牌面+机判+纪律全可见）
-		if (part.id === "spoor-session") console.log(String(prompt).split("\n").map((l) => `[spoor-prompt] ${l}`).join("\n"));
+		// 演练面：注入型牌面（env-event/todo-review/spoor-session）的 prompt 整段出声——
+		// dry-run 即完整彩排（牌面+机判+纪律全可见）。分叉文案（不可达≠空）从演练面可断言，
+		// 测试不翻源码；前缀带 part id 防串台。
+		if (part.id === "env-event" || part.id === "todo-review" || part.id === "spoor-session") console.log(String(prompt).split("\n").map((l) => `[${part.id}-prompt] ${l}`).join("\n"));
 		return { acted: false, why: "dry" };
 	}
 
