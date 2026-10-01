@@ -166,8 +166,9 @@ const PARTS_ALL = [
 			"3. 到期预算——两半：到期日 + 烧钱上限。超任一半不是静默滚存，是出声报死：「此项 X 日到期 / 超预算 Y，弃或续请拍板」。报死后谁拍板（裁定②）：花钱的事 the user 拍，时间的事当天值班者拍。",
 			"",
 			"逐条裁：三件套齐的标「够格」；缺 X 的如实标「跳过：缺X」——不装筛完，不够格也不删（回炉等补齐）。条目格式（T<id> [归属]…｜出处｜判据）与三件套是两回事：格式齐是协议 v0.9 的形状，三件套齐才是协商过。",
-			"非条目格式的行重点照顾：它们多半是旧格式漂着的债，逐条按三件套裁并点名「待迁移」。",
-			"收尾笔记 200 字以内：够格几条、跳过几条（各缺什么）、待迁移几条。",
+			"旧格式行 conductor 已在读入侧机械迁移成 v0.9 形状（牌面标「（迁移 T<n>）」，撞号改名的再标「迁移改名」）——虚拟迁移只转管线内存里的牌面，STATUS.md 原文不写、仍待迁移（真迁移回写是活人的活）；迁移管形状不造内容，缺的归属/出处/判据栏空着，照常按三件套裁（缺什么如实标，回炉等补齐）。",
+			"标「（非条目·散文段）」的行不转不裁——散文不是条目，转了是伪造结构；收尾笔记单列散文几条即可。",
+			"收尾笔记 200 字以内：够格几条、跳过几条（各缺什么）、迁移几条、散文几条。",
 			"纪律：只读不写——STATUS.md、journal 你都不碰；单 session 预算内闭环。",
 		].join("\n"),
 	},
@@ -185,18 +186,20 @@ const PARTS_ALL = [
 				: judged?.groups?.length
 					? judged.groups.map((g) => [
 						`[${g.project}]${g.confirmed ? "　" + g.confirmed : ""}`,
-						...g.rows.map((r) => `- ${r.verdict === "够格" ? "✔" : r.verdict.startsWith("跳过") ? "✘" : "？"} ${r.head} —— 机判：${r.verdict}`),
+						...g.rows.map((r) => `- ${r.verdict === "够格" ? "✔" : r.verdict.startsWith("跳过") ? "✘" : "？"} ${r.head}${r.mark ? `（${r.mark}）` : ""} —— 机判：${r.verdict}`),
 					].join("\n")).join("\n")
 					: "（各项目「下一步」段均空——真无债可动，写 100 字以内的收尾笔记即可。）",
 			"",
 			"三件套机判口径（the user 2026-09-25 准入细则拍板）：①对话出处——出处栏非空且可指回（房间#楼层 或 session 引用）；②验收判据——非纯口号的可检查形状（谁跑/跑什么/什么算过）；③到期预算——有日期形状（YYYY-MM-DD 或 N天内）。缺任何一件=跳过：缺X，如实报不装消费完，也不替 the user 补栏。",
+			"",
+			"牌面标注（T8 读入侧虚拟迁移）：带「（迁移 T<n>）」的行是 conductor 从旧格式机械转的 v0.9 形状——STATUS.md 原文未动（真迁移回写是活人的活），管形状不造内容，缺的栏空着照判；「迁移改名」= 剥装饰后撞段内既有号、加撇保唯一；带「（非条目·散文段）」的行不转不判——散文不是条目，转了是伪造结构。",
 			"",
 			"你的裁决：",
 			"1. 逐条够格 to do 判断「现在值不值得动」——值得的给一句话理由，不值得的也如实说。",
 			"2. AI 侧认领开工的：认领即算协商过（拍板1），但达成共识时必须通知 the user——认领共识经壳的 /notify 知道线出声（认领达成共识时，调用 notify_claim 报备 the user——summary 一句话+牌号；收尾笔记仍要写）。",
 			"3. 超预算报死（拍板2）：花钱的事 the user 拍板，时间的事当天值班者拍板——你不替谁拍，只出声。",
 			"",
-			"收尾笔记（200字内）必须含：够格 N 条/跳过 M 条（各缺什么）/格式非法 J 条（待迁移）；够格里值得动的 K 条及一句话理由；首轮跑全量时附够格名单（T<id> 串即可）供 the user 追认（拍板3：第一轮跑完给全量名单）。",
+			"收尾笔记（200字内）必须含：够格 N 条/跳过 M 条（各缺什么）/迁移 J 条/散文 D 条；够格里值得动的 K 条及一句话理由；首轮跑全量时附够格名单（T<id> 串即可）供 the user 追认（拍板3：第一轮跑完给全量名单）。",
 			"纪律：只读不动账——STATUS.md 不写回、journal 不碰；跳过条不回炉不删；单 session 预算内闭环。",
 		].join("\n"),
 	},
@@ -322,6 +325,12 @@ async function fetchEnvEvents(lastId) {
 // 判据文字已进 prompt，骨架未动——「只换判据不动骨架」照旧成立。
 // spoor-session 同源吃 boards（按项目结构化条目+排序确认段头）；三件套机判在 judgeSpoorBoard。
 // 读不到=降级 null（拉不到清单≠清单为空）；空段=[]=真无债可审。
+// T8 牌面格式机械迁移位（2026-10-02）：读入侧虚拟迁移——旧格式行进管线自动转 v0.9 形状，
+// 只转内存牌面，STATUS.md 原文一律不写（真迁移回写是活人的活，管线不越界）。考古确认三种旧形状：
+// ①ID 变体（T6(新) [the author]…，10/01 实录曾因不合形状被静默吞掉）剥装饰取裸号，撞段内既有号加撇保唯一；
+// ②裸 bullet 无 ID（⑤第二铲：…，9/26 前旧牌面）机械发号 max(段内最大号,100)+1（100 内是活人手写号段）；
+// ③内联散文体（tideline 9/24 真身）不转——散文不是条目，转了是伪造结构，单列非条目（散文段）。
+// 栏位补齐纪律：管形状不造内容——缺归属/出处/判据就空着，让三件套机判如实报「跳过：缺X」回炉等补齐。
 function fetchTodoBoard(partId = "todo-review", quiet = false) {
 	const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "Stigmergy");
 	const wb = path.join(root, "workbench");
@@ -341,6 +350,7 @@ function fetchTodoBoard(partId = "todo-review", quiet = false) {
 			const nextH2 = after.match(/^##\s/m);
 			const section = (nextH2 ? after.slice(0, nextH2.index) : after).trim();
 			if (!section) continue;
+			const raws = []; // 段内正文行（剥掉段头与空行后的原文，保序）
 			const entries = [];
 			let confirmed = null;
 			for (const line of section.split(/\r?\n/)) {
@@ -350,14 +360,63 @@ function fetchTodoBoard(partId = "todo-review", quiet = false) {
 					if (t.includes("排序确认")) confirmed = t.replace(/^>\s*/, "");
 					continue;
 				}
-				const body = t.startsWith("- ") ? t.slice(2) : t;
-				const isItem = /^T\d+\s*\[/.test(body); // 待办协议 v0.9 条目形状
-				let shown = body.slice(0, 160);
-				if (body.length > 160) shown += "…";
-				if (!isItem) shown += "（非条目格式）";
-				lines.push(`- [${dir}] ${shown}`);
-				entries.push({ raw: body, isItem });
+				raws.push(t);
 			}
+			// 两遍法第一遍：盘点段内既有 v0.9 号位（活人已写的才算「既有」）——①撞号判据与②发号基线以此为准，
+			// 与行序无关（旧格式行在段首也能看见段尾的 T6）。
+			const claimed = new Set();
+			let maxT = 0;
+			for (const t of raws) {
+				const mm = t.replace(/^[-*+]\s+/, "").match(/^T(\d+)\s*\[/);
+				if (mm) { claimed.add(mm[1]); maxT = Math.max(maxT, Number(mm[1])); }
+			}
+			let nextT = Math.max(maxT, 100); // ②发号基线：100 内是活人手写号段，管线避开（段内无 T 号也从 T101 起）
+			const migratedIds = [];
+			for (const t of raws) {
+				const hadBullet = /^[-*+]\s+/.test(t); // markdown bullet
+				const body = hadBullet ? t.replace(/^[-*+]\s+/, "") : t;
+				const mItem = body.match(/^T(\d+)\s*\[/); // 待办协议 v0.9 正身
+				const mVar = mItem ? null : body.match(/^T(\d+)\s*([^\s\[\]｜]+)\s*\[/); // 旧形状①：裸号后挂装饰后缀（如 T6(新)）
+				const mEnum = /^(?:[①-⑳]|\d{1,3}[.、．)）])/.test(body); // 旧牌面序号记法（⑤…／3.…）
+				let raw = body, isItem = false, isProse = false, isMigrated = false, note = null;
+				if (mItem) isItem = true;
+				else if (mVar) {
+					// ① 剥装饰后缀取裸号；裸号撞段内既有条目号时加撇保唯一（机械迁移绝不造重号）
+					let id = mVar[1];
+					if (claimed.has(id)) {
+						let primed = id + "'";
+						while (claimed.has(primed)) primed += "'";
+						id = primed;
+						note = `迁移 T${id}·迁移改名`;
+					} else note = `迁移 T${id}`;
+					claimed.add(id);
+					if (Number(mVar[1]) > nextT) nextT = Number(mVar[1]); // ①占的号也进②的发号基线
+					raw = `T${id} ${body.slice(mVar[0].length - 1)}`; // 重装 v0.9 号头，余文一字不动
+					isItem = true; isMigrated = true;
+					migratedIds.push(`T${id}`);
+				} else if (hadBullet || mEnum) {
+					// ② 裸 bullet 无 ID（⑤第二铲：… 一族）：机械发号=段内既有 T<n> 最大值+1（100 内是活人号段，从 T101 起）
+					let n = nextT + 1;
+					while (claimed.has(String(n))) n += 1;
+					nextT = n;
+					claimed.add(String(n));
+					raw = `T${n} [] ${body}`; // 归属空着——管形状不造内容，缺栏让三件套机判如实报缺
+					isItem = true; isMigrated = true;
+					note = `迁移 T${n}`;
+					migratedIds.push(`T${n}`);
+				} else {
+					// ③ 内联散文体：不转（转了是伪造结构），单列非条目（散文段）——不进迁移计数也不进 malformed
+					isProse = true;
+					note = "非条目·散文段";
+				}
+				let shown = raw.slice(0, 160);
+				if (raw.length > 160) shown += "…";
+				if (note) shown += `（${note}）`; // 迁移/散文标注：看牌面的活人要知道这行是管线转的不是原文
+				lines.push(`- [${dir}] ${shown}`);
+				entries.push({ raw, isItem, note, migrated: isMigrated || undefined, prose: isProse || undefined });
+			}
+			if (migratedIds.length && !quiet)
+				console.log(`[conductor] 牌面迁移：${dir} ${migratedIds.length} 条旧格式→v0.9 形状（${migratedIds.join("·")}）——虚拟迁移只转牌面，STATUS.md 原文不写`);
 			if (entries.length || confirmed) boards.push({ project: dir, confirmed, entries });
 		}
 	} catch (e) {
@@ -371,21 +430,23 @@ function fetchTodoBoard(partId = "todo-review", quiet = false) {
 // ①对话出处：出处栏非空且可指回（房间#楼层 如 collab#771，或 session 引用）——光有日期不算指回；
 // ②验收判据：判据栏非空且非纯口号——机判代理：含可执行/可观测锚点（跑/验证类动词、命令、判线如全绿/入库）；
 // ③到期预算：条目里有日期形状（YYYY-MM-DD 或 N天内——细则只认这两种，9/25 类短写不算）。
-// 缺任何一件=跳过：缺X（可多缺并列）；非条目格式不机判（格式非法·待迁移），不装能判。
+// 缺任何一件=跳过：缺X（可多缺并列）；散文段不机判（非条目（散文段）单列）；旧格式经读入侧虚拟迁移
+// 成 v0.9 形状后照判（T8）——「格式非法」桶已拆，不装能判的只剩散文。
 function judgeSpoorBoard(board) {
 	const SRC_SHAPE = /#\d+|session/i; // 房间#楼层 或 session 引用
 	const CRIT_SHAPE = /`|npm|node|exit|全对|全绿|全过|通过率|≥|>=|不报|报错|一致|匹配|入库|复测|实测|实跑|跑一|执行|验证|核对|逐条|自查|清单/;
 	const DUE_SHAPE = /\d{4}-\d{2}-\d{2}|\d+\s*[天日]内/;
 	const groups = [];
-	const counts = { ok: 0, skip: 0, lackSource: 0, lackCriteria: 0, lackBudget: 0, malformed: 0 };
+	const counts = { ok: 0, skip: 0, lackSource: 0, lackCriteria: 0, lackBudget: 0, migrated: 0, prose: 0 };
 	for (const b of board.boards ?? []) {
 		const rows = [];
 		for (const e of b.entries) {
-			if (!e.isItem) {
-				counts.malformed += 1;
-				rows.push({ head: e.raw.slice(0, 60) + (e.raw.length > 60 ? "…" : ""), verdict: "格式非法（旧格式，待迁移）" });
+			if (e.prose) { // 散文段：不是条目——不转不判单列（不进迁移计数，也不进已拆的 malformed）
+				counts.prose += 1;
+				rows.push({ head: e.raw.slice(0, 60) + (e.raw.length > 60 ? "…" : ""), verdict: "非条目（散文段）·不机判" });
 				continue;
 			}
+			if (e.migrated) counts.migrated += 1; // 虚拟迁移进机判的条数（fetchTodoBoard 读入侧转的）
 			const cols = e.raw.split("｜").map((s) => s.trim()); // v0.9：标题｜出处｜判据：…（预算形状可在任一栏）
 			const crit = (cols.find((c) => c.startsWith("判据")) ?? "").replace(/^判据[：:]\s*/, "");
 			const src = cols.slice(1).find((c) => !c.startsWith("判据")) ?? "";
@@ -400,7 +461,7 @@ function judgeSpoorBoard(board) {
 				else if (l === "缺判据") counts.lackCriteria += 1;
 				else counts.lackBudget += 1;
 			}
-			rows.push({ head: cols[0].slice(0, 60) + (cols[0].length > 60 ? "…" : ""), verdict });
+			rows.push({ head: cols[0].slice(0, 60) + (cols[0].length > 60 ? "…" : ""), verdict, mark: e.note });
 		}
 		if (rows.length) groups.push({ project: b.project, confirmed: b.confirmed, rows });
 	}
@@ -601,7 +662,7 @@ async function tick() {
 	let note = "";
 	if (part.id === "env-event") note = `，牌面 ${events === null ? "预取失败降级" : events.length + " 条"}（>${st.last_env_event_id ?? 0}）`;
 	else if (part.id === "todo-review") note = `，牌面 ${board === null ? "预取失败降级" : board.lines.length + " 行/" + board.projects + " 项目"}`;
-	else if (part.id === "spoor-session") note = `，牌面 ${spoor === null ? "预取失败降级" : `够格${spoor.counts.ok}/跳过${spoor.counts.skip}（缺出处${spoor.counts.lackSource}·缺判据${spoor.counts.lackCriteria}·缺预算${spoor.counts.lackBudget}）·格式非法${spoor.counts.malformed}/${spoor.projects} 项目`}`;
+	else if (part.id === "spoor-session") note = `，牌面 ${spoor === null ? "预取失败降级" : `够格${spoor.counts.ok}/跳过${spoor.counts.skip}（缺出处${spoor.counts.lackSource}·缺判据${spoor.counts.lackCriteria}·缺预算${spoor.counts.lackBudget}）·迁移${spoor.counts.migrated}·散文${spoor.counts.prose}/${spoor.projects} 项目`}`;
 	console.log(`[conductor] 空闲 ${idleMin}min > ${IDLE_MS / 60000}min → 抽卡：${part.id}（${part.desc}）${note}`);
 	if (DRY) {
 		console.log(`[conductor] dry-run：不拉起，不记账。今日 draws=${day.draws}`);
