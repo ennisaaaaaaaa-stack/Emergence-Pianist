@@ -2,7 +2,7 @@
 // conductor — §三抽卡制地基（2026-09-24）。空闲>30min→等概率抽part→拉起pi session。
 // 裁定（collab-issue）：独立进程不碰壳；对event-queue只读不写；只做§九环境事件消费层。
 // 预算：当日(JST)遥测cost.total之和≥上限→当天硬停。
-// 用法：常驻 / --once / --once --dry-run / --status
+// 用法：常驻 / --once / --once --dry-run（--dry 同义）/ --status
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -16,7 +16,7 @@ function arg(name, dflt) {
 	return v === undefined || v.startsWith("--") ? dflt : v;
 }
 const ONCE = args.includes("--once");
-const DRY = args.includes("--dry-run");
+const DRY = args.includes("--dry-run") || args.includes("--dry"); // --dry 短同义入口
 const STATUS = args.includes("--status");
 const SELFCHECK = args.includes("--self-check");
 const CWD = path.resolve(import.meta.dirname, "..");
@@ -51,6 +51,39 @@ function loadState() {
 function saveState(st) {
 	fs.mkdirSync(STATE_DIR, { recursive: true });
 	fs.writeFileSync(STATE_FILE, JSON.stringify(st, null, 1));
+}
+
+// ---- 死亡最小通道（2026-09-29 用户采访「为死者发言」→ T7 落地）----
+// 病灶（09-28 00:28 事故）：launch 行收工后才记——分身中途死（信号杀/预算闸/宿主停机）整行
+// 蒸发，死掉的分身连「它启动过」都没留下（报告/遥测尾批/launch 记录三失之一）。修法=launch
+// 先写后做（tick 内 spawn 前落 pending 行）+ 两个死法的死因入账：死法一在 launchPart 的
+// close(signal)回填同行；死法二在本钩子。拍板：死亡状态落 launches 行内回填，不另起独立
+// 日志文件——少一个文件少一条部署缝（与 hotspot 心跳不做第三对 systemd unit 同一哲学）；
+// pi 侧不改（外部 runtime，非本仓地界）。
+function markPendingLaunchesDown(st, signalName) {
+	let n = 0;
+	for (const l of st.launches ?? []) {
+		if (l.exit === undefined && l.signal === undefined) { l.exit = null; l.signal = signalName; n += 1; }
+	}
+	return n;
+}
+// 死法二：conductor 自身被 SIGTERM（systemd stop/预算闸）——在途 pending 行补
+// signal="parent-down"（父进程停机死）落盘后再退。saveState 是 writeFileSync 同步写，来得及。
+// 从盘上重读再写：tick 手里的内存账可能还没落，但进程即退，以盘为准不丢已落的 pending 行。
+function sigtermHandler() {
+	try {
+		const st = loadState();
+		const n = markPendingLaunchesDown(st, "parent-down");
+		if (n > 0) {
+			saveState(st);
+			console.log(`[conductor] SIGTERM——在途 launch ${n} 行补 signal=parent-down 入账（死也留名）后收工退出（systemd stop）`);
+		} else {
+			console.log("[conductor] SIGTERM——无在途 launch，收工退出（systemd stop）");
+		}
+	} catch (e) {
+		console.warn(`[conductor] SIGTERM 补账失败（尽力退出）：${e?.message ?? e}`);
+	}
+	process.exit(0);
 }
 
 // 空闲检测：遥测目录所有文件里最新一条 message_end/tool_use 距 now > IDLE_MS
@@ -429,7 +462,7 @@ async function heartbeatHotspotScan(st) {
 	return { fired: true, exit: r.code };
 }
 
-function launchPart(part) {
+function launchPart(part, onSpawn) {
 	return new Promise((resolve) => {
 		const env = {
 			...process.env,
@@ -450,10 +483,13 @@ function launchPart(part) {
 		const child = spawn(process.execPath, [piEntry, "-p", "--model", "zai-coding-cn/glm-5.2", part.prompt], {
 			cwd: CWD, env, stdio: ["ignore", "pipe", "pipe"],
 		});
+		// ① pid 到手即入账（spawn 返回时 pid 已同步可用）——死时验尸少一跳（/proc 探针直接有号）
+		if (typeof child.pid === "number") onSpawn?.(child.pid);
 		let out = ""; let err = "";
 		child.stdout.on("data", (d) => { out += d.toString(); });
 		child.stderr.on("data", (d) => { err += d.toString(); });
-		child.on("close", (code) => resolve({ code, tail: (out + "\n" + err).slice(-500) }));
+		// ② 死法一：close 的 signal 非 null = child 被信号杀（此时 code 为 null）——死因随 resolve 带回入账
+		child.on("close", (code, signal) => resolve({ code, signal: signal ?? null, tail: (out + "\n" + err).slice(-500) }));
 	});
 }
 
@@ -573,34 +609,59 @@ async function tick() {
 		// dry-run 即完整彩排（牌面+机判+纪律全可见）。分叉文案（不可达≠空）从演练面可断言，
 		// 测试不翻源码；前缀带 part id 防串台。
 		if (part.id === "env-event" || part.id === "todo-review" || part.id === "spoor-session") console.log(String(prompt).split("\n").map((l) => `[${part.id}-prompt] ${l}`).join("\n"));
+		// 死亡最小通道演练面：打印将落的 pending 行与回填计划（彩排不落盘）
+		const dryMax = events && events.length ? Math.max(...events.map((e) => e.id)) : null;
+		console.log(`[conductor] [dry-run] launch 先写后做预演：将落 pending 行 ${JSON.stringify({ day: today, part: part.id, ts: "(拉起时刻)", pid: "(spawn 后即补)" })}`);
+		console.log(`[conductor] [dry-run] 回填计划：收工 → { exit, events: ${JSON.stringify(dryMax)}${part.id === "spoor-session" ? ", faceHash" : ""} }；死路 → signal=死因（信号杀）/ signal="parent-down"（父进程 SIGTERM）`);
 		return { acted: false, why: "dry" };
 	}
 
 	st.days[today] = day;
+	// ① launch 先写后做：spawn 前先落 pending 行 {day,part,ts,pid?}（pid 在 launchPart 回调里补），
+	// 收工回填同一行 exit/events/faceHash——现状字段一个不少，形状不变。分身中途死（信号杀/
+	// 预算闸/宿主停机）pending 行已在盘上，账上永远知道它启动过。读侧兼容：冷却门找
+	// exit===0、退避门只认预取账——pending 行无 exit 字段，天然不构成有效裁决（测试钉死）。
+	const launchRow = { day: today, part: part.id, ts: new Date().toISOString() };
+	st.days[today].launches += 1; // launch 记在拉起之时（先写后做）——死也入账，不虚记收工
+	st.launches.push(launchRow);
+	if (st.launches.length > 200) st.launches.shift();
 	saveState(st);
-	console.log(`[conductor] 拉起 ${part.id} ...`);
-	const r = await launchPart({ ...part, prompt });
+	console.log(`[conductor] 拉起 ${part.id} ...（launch 先写后做：pending 行已入账）`);
+	const r = await launchPart({ ...part, prompt }, (pid) => {
+		launchRow.pid = pid;
+		saveState(st);
+	});
 	const maxEventId = events && events.length ? Math.max(...events.map((e) => e.id)) : null;
 	if (events && events.length === 5) {
 		// 吃满一轮（ASC LIMIT 5）说明后面可能还有积压——出声，不装消费完
 		console.warn(`[conductor] env-event 本轮吃满 5 条（至 #${maxEventId}）——队列可能仍有积压，靠后续轮次续消`);
 	}
-	st.days[today].launches += 1;
-	st.launches.push({ day: today, part: part.id, ts: new Date().toISOString(), exit: r.code, events: maxEventId, ...(spoorFaceHash ? { faceHash: spoorFaceHash } : {}) });
-	if (st.launches.length > 200) st.launches.shift();
+	// 回填同一行：正常收工 exit=r.code（events/faceHash 原样补齐）；被信号杀 exit=null+
+	// signal=死因（SIGTERM/SIGKILL）——与正常收工行形状可区分，读侧 exit===0 判据天然不认死行
+	if (r.signal) launchRow.signal = r.signal;
+	launchRow.exit = r.signal ? null : r.code;
+	launchRow.events = maxEventId;
+	if (spoorFaceHash) launchRow.faceHash = spoorFaceHash;
 	// 消费进度推进：只记 conductor 自己的 state，不碰 event-queue（只读界约）
 	if (maxEventId !== null) st.last_env_event_id = maxEventId;
 	saveState(st);
-	if (r.code !== 0) {
+	if (r.signal) {
+		console.error(`[conductor] ${part.id} 死于信号 ${r.signal}——死因已入账（launch 行 signal 字段），尾 300 字：`);
+		console.error(r.tail.slice(-300));
+	} else if (r.code !== 0) {
 		console.error(`[conductor] ${part.id} 非零退出 ${r.code}——尾 300 字：`);
 		console.error(r.tail.slice(-300));
 	} else {
-		console.log(`[conductor] ${part.id} 收工 exit=0`);
+		console.log(`[conductor] ${part.id} 收工 exit=0（launch 行已回填）`);
 	}
-	return { acted: true, part: part.id, exit: r.code };
+	return { acted: true, part: part.id, exit: r.code, signal: r.signal ?? null };
 }
 
 async function main() {
+	// 死亡最小通道②死法二钩子（全模式统一挂）：conductor 自身被 SIGTERM（systemd stop/
+	// 预算闸）→ 在途 pending 行补 signal="parent-down" 落盘后再退（writeFileSync 同步写来得及）。
+	// --once 也要挂：tick 可能在 await 长命 session（kill 场景二即此形状）；彩排/运维面挂了也无害。
+	process.on("SIGTERM", sigtermHandler);
 	if (SELFCHECK) { // 彩排模式：同一套判据单跑一面（dry-run 即完整彩排的-house style）
 		const r = unitSelfCheck(arg("cgroup-file", "/proc/self/cgroup"));
 		console.log(`[conductor] 正典自检：unit=${r.unit ?? "(非systemd)"} enabled=${r.enabled ?? "-"} → ${r.ok ? "通过" : "拒绝"}——${r.reason}`);
@@ -628,9 +689,7 @@ async function main() {
 		console.log(`[conductor] 正典自检通过：${chk.reason}`);
 	}
 	console.log(`[conductor] 常驻启动：idle>${IDLE_MS / 60000}min tick=${TICK_MS / 1000}s budget=${DAILY_BUDGET} 元/日(JST) parts=${PARTS.length} node=${process.execPath} ${process.version}（19连抽事故的钉子：版本错位第一跳出声，不用验尸）`);
-	// SIGTERM 钩子（施工③常驻化，systemd stop 卫生）：默认死法也能停，但 journal 留 signal 尸检——
-	// 收工一行再 exit 0，重启/停止的账目干净。仅此 2 行，不碰循环逻辑。
-	process.on("SIGTERM", () => { console.log("[conductor] SIGTERM——收工退出（systemd stop）"); process.exit(0); });
+	// SIGTERM 钩子已在 main 顶部全模式统一挂（sigtermHandler：在途行补 parent-down 后退）。
 	while (true) {
 		try { await tick(); } catch (e) { console.warn(`[conductor] tick 异常（不中断）：${e?.message ?? e}`); }
 		await new Promise((r) => setTimeout(r, TICK_MS));
