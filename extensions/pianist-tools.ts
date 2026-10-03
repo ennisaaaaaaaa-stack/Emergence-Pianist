@@ -298,6 +298,17 @@ function registerBridgeTools(pi: ExtensionAPI) {
 					agent: AGENT_ID,
 				}),
 			});
+			// 软错不软抛（2026-10-04 wander，③线）：壳的失败信封是 HTTP 200 + 顶层 {error}
+			// （未知动作/提供者错都走这条路），而 pi 的错误道唯一入口是 throw——返回值永远
+			// isError:false，猜错动作名在 errorHotspots 里曾是隐形的（env-event 六场空牌实证）。
+			// throw 的 message 会报给模型：可用动作清单仍看得见，只补上错误记账。
+			// 非失败信封照常返回：红牌等审批 {deferred}、读面状态码 {status,body} 是数据不是失败。
+			const envelope = out as { error?: unknown; deferred?: unknown };
+			if (typeof envelope?.error === "string" && !envelope.deferred) {
+				throw new Error(
+					`pianist_bridge ${String((params as { action?: string }).action)}: ${envelope.error}`,
+				);
+			}
 			return {
 				content: [{ type: "text", text: JSON.stringify(out) }],
 				details: { wired: true },

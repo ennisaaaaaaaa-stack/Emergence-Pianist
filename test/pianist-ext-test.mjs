@@ -101,6 +101,27 @@ const r5b = await withMockShell(async (_h2, t2, _e2, seen) => {
 }, { "/tools/invoke": { status: 200, body: { ok: true } } });
 console.log("bridge sends agent signature:", r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats");
 
+// 5c) 软错不软抛（2026-10-04 wander，③线）：壳 200+顶层 {error} 是失败信封——pi 的错误道
+//     唯一入口是 throw，返回值永远 isError:false；env-event 六场猜动作名曾在此隐形。
+//     throw 的 message 必须带上壳的原文（可用动作清单），模型看得见+errorHotspots 数得到。
+//     （mock 壳语义：route 带 status 时响应体=整个 route 对象——error 放 route 顶层即响应顶层）
+const r5c = await withMockShell(async (_h2, t2) => {
+	try {
+		await t2[0].execute("t10", { action: "no_such_action", payload: {} }, undefined, undefined, {});
+		return { threw: false, msg: "" };
+	} catch (e) {
+		return { threw: true, msg: String(e?.message) };
+	}
+}, { "/tools/invoke": { status: 200, error: "未知工具 action=no_such_action。可用：grimoire_map, spoor_list" } });
+console.log("soft-error envelope throws with steering text:", r5c.threw === true && r5c.msg.includes("pianist_bridge") && r5c.msg.includes("可用"));
+
+// 5d) 非失败信封不许 throw：红牌等审批 {deferred:true,approval} 是合法结局（报批不是失败）；
+//     读面 {status,body} 顶层无 error 也照常返回（状态码是数据）
+const r5d = await withMockShell(async (_h2, t2) => {
+	return await t2[0].execute("t11", { action: "grimoire_submit", payload: {} }, undefined, undefined, {});
+}, { "/tools/invoke": { status: 200, deferred: true, approval: { id: "ap-1" } } });
+console.log("deferred approval returns, no throw:", r5d?.details?.wired === true && String(r5d?.content?.[0]?.text).includes("deferred"));
+
 // 6) 洞1：壳在场 + ingest 503 → 丢弃必须出声（warn+计数+session 汇总），且不抛错
 const r6 = await withMockShell(async (h2) => {
 	// 灌 3 条遥测（tool_execution_end→enqueue），攒不到 25 条批量线，靠 settled 兜底冲刷
@@ -132,7 +153,7 @@ let silentOk = false;
 	console.log("silent drop in dismantled state (no warn):", silentOk);
 }
 
-const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats", r6 === true, silentOk];
+const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats", r5c.threw === true && r5c.msg.includes("pianist_bridge") && r5c.msg.includes("可用"), r5d?.details?.wired === true && String(r5d?.content?.[0]?.text).includes("deferred"), r6 === true, silentOk];
 console.log("PASS " + checks.filter(Boolean).length + "/" + checks.length);
 // 门禁硬墙：红必须挡门（此前只 print 不 exit，全红也 exit 0，npm test 的 && 链拦不住）
 process.exit(checks.every(Boolean) ? 0 : 1);
