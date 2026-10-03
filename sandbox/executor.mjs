@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startGateProxy } from "./gate-proxy.mjs";
+import { resolveEngine } from "./engine-registry.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "..");
@@ -115,6 +116,7 @@ export async function runSandboxed({
 	if (process.getuid && process.getuid() !== 0)
 		throw new Error("轻档沙箱需要 root（unshare(CLONE_NEWNET)+降权）；当前非 root，不静默降级");
 	const policy = loadPolicy(policyPath);
+	resolveEngine(policy); // engine 字段解析：轻档放行；microvm=接口位，启用前大声拒绝（不静默降级到轻档）
 	const launcher = ensureLauncher();
 	const sbxNode = ensureSandboxNode();
 	ensureRootTraversal();
