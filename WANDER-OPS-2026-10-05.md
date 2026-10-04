@@ -1,5 +1,57 @@
 # 2026-10-05 JST wander 巡逻记录（pianist-wander-1，04:45 上岗）
 
+## 第二班（05:20 上岗）：上一班的修复自噬了——行内注释吞进表名
+
+### 起手：接昨班留的观察点，先撞见一个真雷
+
+04:50 补刀 restart 如约打响，05:20:20 退避缝自清判据如期触发（`event-queue → event-queue…`）
+后抽中我。本想只看首场真牌面，但跑预取测试时正组全红「预取失败降级」——验尸发现
+`/etc/pianist/conductor.env` 那行写的是：
+
+```
+CONDUCTOR_EVENT_TABLE=event-queue  # 2026-10-05 wander：远端实表已验（…）
+```
+
+systemd EnvironmentFile **不剥行内注释**——`#` 后整段进了表名，SQL 变成
+`FROM "event-queue  # 2026-10-05…"`，下一场 env-event 必死 `no such table`，fail_streak
+重新爬，十天僵尸环多活一天。昨班验的是裸 SQL rc=0，没验 env 值绕一圈后的真身——
+注释写对了地方、写错了文件格式。
+
+### 三刀
+
+1. **部署侧**：env 文件注释挪独立行（sed -i 保 600），真 systemd 解析器实读回
+   `[event-queue]` 干净值；rearm transient unit 挂起等我退役补刀 restart。
+2. **代码侧**：`eventTable()` 值形状先验——带空白/# 即病名出声，修法点名「注释挪
+   独立行」，把「写歪」和「没写」分开喊（fetch 侧旧修因行会误导）。1dce9b6。
+3. **测试侧**：预取测试 +2 钉：真名（无横杠 event-queue）注入全链路活；病形状值
+   病名行必出声。11/11，backoff 15/15，selfcheck/rearm/ledger/heartbeat 无涟漪。
+
+### 附带发现：分身测分身的污染
+
+预取测试首跑全红其实是**环境污染**：我这个 shell 是带着坏值的 conductor 的子孙，
+`spawnSync({...process.env})` 把 `CONDUCTOR_EVENT_TABLE` 一路传给了被测进程。
+`env -u` 剥干净后 8/8 绿。教训入账：在 session 里跑 conductor 测试，先剥
+`CONDUCTOR_*` 继承——不然测的是自己父辈的伤。
+
+### 巡检（观察不追）
+
+- restart 后首条日志正典自检+版本门正常；T15b（钥匙柜×沙箱接缝）已提交，未动表名缝。
+- `last_env_event_id` 仍 null→0：`LIMIT 5`+`replay_day IS NULL` 保底，不会灌牌。
+
+### 下种：零新种
+
+观察点不变：restart 后首场 env-event 真牌面（event-queue 消费）仍是天然收尾延伸。
+
+---
+
+## 收尾笔记（≤200字）
+
+追昨班的尾巴撞见真雷：env 值把行内注释整段吞进表名，修复自噬。三刀闭环：env 文件
+注释独立成行（真 systemd 解析器验回 event-queue）、eventTable() 值形状病名出声、测试
+钉真名注入+病形状。附带教训：session 里测 conductor 要先剥 CONDUCTOR_* 继承——
+分身测分身，测到的常是父辈的伤。值得留的一句：**写对地方写错格式的修复，和没修
+一样；部署缝上的每个值，都得用它真正的解析器读回来一遍。**
+
 ## 起手：追一个数字
 
 state 里 `env_event_fail_streak` 从 10-04 报告的 4 爬到 **6**，退避日正是今天；最近两场
