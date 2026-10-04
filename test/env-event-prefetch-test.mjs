@@ -95,5 +95,29 @@ check("彩排C：真空——牌面 0 条 + 文案明说「可达且无新事件
 		&& runEmpty.stdout.includes("队列可达且无新事件") && !runEmpty.stdout.includes("不要去探队列"),
 	runEmpty.stdout.split("\n").find((l) => l.includes("[env-event-prompt]")) ?? "(无彩排行)");
 
+// ---- 生产缝钉（2026-10-05 05:20 wander 补刀验尸）：真名注入 + 行内注释病 ----
+// 当日生产事故形状：/etc/pianist/conductor.env 写 CONDUCTOR_EVENT_TABLE=event-queue  # 注释
+// ——systemd EnvironmentFile 不剥行内 #，值连注释一起进 SQL → no such table，fetch 侧修因行
+// 还会误导（缝写了，只是写歪）。两钉：①真名（无横杠）注入后全链路活 ②带注释值病名出声点名格式。
+const DB_REAL = path.join(tmp, "real.db");
+const mkReal = spawnSync("sqlite3", [DB_REAL, `CREATE TABLE event-queue (id INTEGER, thread_id INTEGER, cosine REAL, signal_text TEXT, signal_source TEXT, logged_at TEXT, replay_day TEXT);
+INSERT INTO event-queue VALUES (11, 3, 0.9, 'real-row', 'user_message', '2026-10-05T00:00:00Z', NULL);`], { encoding: "utf8" });
+check("真名夹具库就位（无横杠表名 event-queue）", mkReal.status === 0, (mkReal.stderr || "").trim().slice(0, 120));
+const envReal = { ...env, CONDUCTOR_STATE_DIR: path.join(tmp, "state-real"), CONDUCTOR_MEMORY_DB: DB_REAL, CONDUCTOR_EVENT_TABLE: "event-queue" };
+fs.mkdirSync(envReal.CONDUCTOR_STATE_DIR, { recursive: true });
+const runReal = spawnSync(process.execPath, [CONDUCTOR, "--once", "--dry-run"], { env: envReal, encoding: "utf8" });
+check("真名注入：CONDUCTOR_EVENT_TABLE=event-queue 全链路活（牌面 1 条，摘录到场）",
+	runReal.status === 0 && runReal.stdout.includes("牌面 1 条（>0）") && runReal.stdout.includes("real-row"),
+	(runReal.stdout.match(/抽卡[^\n]*/) || ["(无抽卡行)"])[0].slice(0, 160));
+
+// 病形状（复刻当日生产 env 原文）：值带行内注释——病名行必须点名「注释挪独立行」
+const envBad = { ...env, CONDUCTOR_STATE_DIR: path.join(tmp, "state-bad"), CONDUCTOR_MEMORY_DB: DB_REAL,
+	CONDUCTOR_EVENT_TABLE: "event-queue  # 2026-10-05 wander：远端实表已验" };
+fs.mkdirSync(envBad.CONDUCTOR_STATE_DIR, { recursive: true });
+const runBad = spawnSync(process.execPath, [CONDUCTOR, "--once", "--dry-run"], { env: envBad, encoding: "utf8" });
+check("病形状出声：值带行内注释→病名行点名 EnvironmentFile 不剥 #（修法：注释挪独立行）",
+	(runBad.stdout + runBad.stderr).includes("病名 env 值带行内注释/空白") && (runBad.stdout + runBad.stderr).includes("注释挪独立行"),
+	(runBad.stdout + runBad.stderr).split("\n").find((l) => l.includes("病名 env 值")) ?? "(无病名行)");
+
 console.log(`\n${pass}/${total}`);
 process.exit(pass === total ? 0 : 1);

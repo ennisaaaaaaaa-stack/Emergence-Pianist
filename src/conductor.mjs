@@ -272,7 +272,14 @@ function unitSelfCheck(cgroupFile = "/proc/self/cgroup", systemctlCmd = process.
 // CONDUCTOR_EVENT_TABLE 注入（/etc/pianist/conductor.env）。饿死退避的「缝已改」判据
 // 也读它——表名变了=部署侧动过缝，退避自动解除重探（2026-09-29 wander）。
 function eventTable() {
-	return (process.env.CONDUCTOR_EVENT_TABLE ?? "event-queue").replace(/"/g, "");
+	// 病名出声（2026-10-05 05:20 wander 补刀验尸）：EnvironmentFile 不剥行内注释——值里带 # 或
+	// 空白 = 注释整段被吞进表名，SQL 必死 no such table，且 fetch 侧「写 CONDUCTOR_EVENT_TABLE」
+	// 的修因行会误导（缝写了，只是写歪了）。值形状先验：把「写歪」和「没写」分开喊。
+	const raw = process.env.CONDUCTOR_EVENT_TABLE;
+	if (raw !== undefined && /[\s#]/.test(raw)) {
+		console.warn(`[conductor] 病名 env 值带行内注释/空白：CONDUCTOR_EVENT_TABLE="${raw}"——EnvironmentFile 不剥行内 #，注释整段进表名。修法：注释挪独立行（# 开头）后重启本服务`);
+	}
+	return (raw ?? "event-queue").replace(/"/g, "");
 }
 
 // env-event 牌面预取：the-remote event-queue 里 replay_day IS NULL 的实时行（未回放消费的）。
