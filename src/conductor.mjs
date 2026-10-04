@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { envOrVault } from "../credentials/env-source.mjs";
 
 const args = process.argv.slice(2);
 function arg(name, dflt) {
@@ -530,7 +531,9 @@ function launchPart(part, onSpawn) {
 			PIANIST_AGENT_ID: `pianist-${part.id}-1`,
 			PIANIST_SHELL_URL: SHELL_URL,
 			NO_COLOR: "1",
-			ZAI_CODING_CN_API_KEY: process.env.ZAI_CODING_CN_API_KEY,
+			// 钥匙柜供给（T15 活一）：柜有 coding-plan 走柜（落 use-vault 事件）；柜无回落本进程
+			// env（过渡态——/etc/pianist/conductor.env 明文是残留面，下线路线见 docs/t15-env-offline.md）。
+			ZAI_CODING_CN_API_KEY: envOrVault("ZAI_CODING_CN_API_KEY", "coding-plan"),
 		};
 		// CONDUCTOR_PI_BIN：测试/演练时可换 stub（真拉起走默认 pi）
 		const piBin = process.env.CONDUCTOR_PI_BIN ?? "./node_modules/.bin/pi";

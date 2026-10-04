@@ -35,6 +35,7 @@ const V_BETA = "value-beta-3d8e55cd77";
 const V_BROKER = "broker-secret-9f1a2b3c4d5e6f70";
 const V_INJECT = "inject-secret-0a1b2c3d4e5f";
 const V_GATE = "gatevalue-leak-99887766";
+const V_VAULT = "vault-value-6b7a8c9d0e1f";
 
 fs.writeFileSync(
 	process.env.PORTALK_CRED_TIERS,
@@ -226,6 +227,54 @@ function run(args, { input = "" } = {}) {
 	check2("inject: 退出码透传", rc.code === 7);
 	const jtext = fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8");
 	check2("inject: use-inject 事件落账（只有名字）", jtext.includes('"action":"use-inject"') && !jtext.includes(V_INJECT));
+}
+
+// ---------------------------------------------------------------------------
+// 8) env-source（T15 活一）：柜优先 / env 过渡回落（出声+记账）/ 双无 undefined
+// ---------------------------------------------------------------------------
+{
+	// 本节专用 helper：跑 node -e 直验 envOrVault（不能用上面的 run()——它给 args[0] 拼
+	// repoRoot 前缀，只认 repo 相对路径的脚本名；这里起的是 node 本体）
+	const runNode = (code, extraEnv = {}) =>
+		new Promise((resolve) => {
+			const cp = spawn("node", ["-e", code], {
+				cwd: repoRoot,
+				env: { ...process.env, ...extraEnv },
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			let o = "", e = "";
+			cp.stdout.on("data", (d) => (o += d));
+			cp.stderr.on("data", (d) => (e += d));
+			cp.on("close", (code) => resolve({ code, out: o, err: e }));
+		});
+	const mod = `${repoRoot}/credentials/env-source.mjs`;
+
+	// 8a) 柜有：值走柜（use-vault 落账），env 里的旧明文被无视
+	await run(["credentials/store.mjs", "write", "vault-key"], { input: `${V_VAULT}\n` });
+	const r = await runNode(
+		`import("${mod}").then(m => process.stdout.write(JSON.stringify({ v: m.envOrVault("X_TEST_KEY", "vault-key") === ${JSON.stringify(V_VAULT)} })))`,
+		{ X_TEST_KEY: "ambient-old-plaintext" },
+	);
+	check2("envOrVault: 柜有 → 值=柜值（env 旧明文被无视，无回落告警）", JSON.parse(r.out || '{"v":false}').v === true && !r.err.includes("过渡回落"));
+
+	// 8b) 柜无 + env 有：过渡回落出声 + env-fallback 落账
+	const p2 = await runNode(
+		`import("${mod}").then(m => process.stdout.write(m.envOrVault("X_TEST_KEY", "no-such-key")))`,
+		{ X_TEST_KEY: "env-fallback-value" },
+	);
+	check2("envOrVault: 柜无 env 有 → 过渡回落出声（stderr 告警）", p2.err.includes("过渡回落"));
+	check2("envOrVault: 回落值=env 值", p2.out.trim() === "env-fallback-value");
+
+	// 8c) 双无：undefined
+	const r3 = await runNode(
+		`import("${mod}").then(m => process.stdout.write(String(m.envOrVault("X_TEST_KEY", "no-such-key"))))`,
+	);
+	check2("envOrVault: 双无 → undefined（调用方大声死兜底）", r3.out.trim() === "undefined" && !r3.err.includes("过渡回落"));
+
+	// 8d) 记账：use-vault 与 env-fallback 事件都有且不含值
+	const jtext = fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8");
+	check2("envOrVault: use-vault 事件落账（只有名字）", jtext.includes('"action":"use-vault"') && jtext.includes('"name":"vault-key"') && !jtext.includes(V_VAULT));
+	check2("envOrVault: env-fallback 事件落账（存量清单面）", jtext.includes('"action":"env-fallback"') && jtext.includes('"name":"no-such-key"'));
 }
 
 // ---------------------------------------------------------------------------

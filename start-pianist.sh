@@ -73,8 +73,14 @@ fi
 
 export PIANIST_SHELL_URL=http://127.0.0.1:8770
 export PIANIST_AGENT_ID="${PIANIST_AGENT_ID:-pianist-dev-1}"
-export ZAI_CODING_CN_API_KEY="${ZAI_CODING_CN_API_KEY:?export ZAI_CODING_CN_API_KEY first}"
-# ↑ key 必须从 env 供给（仓库不含任何密钥）
+# key 供给（T15 活一，2026-10-05）：钥匙柜优先——柜有 coding-plan 用 inject 代注入后 exec；
+# 柜无回落调用方 env 明文（过渡态）。仓库永不带 key，这条路只是把「env 从哪来」换了个源头。
+if node "$RUNTIME_DIR/credentials/store.mjs" has coding-plan 2>/dev/null | grep -q '^true$'; then
+  RUN_PI=(node "$RUNTIME_DIR/credentials/inject.mjs" --env ZAI_CODING_CN_API_KEY=coding-plan -- "$RUNTIME_DIR/node_modules/.bin/pi" --model zai-coding-cn/glm-5.2)
+else
+  export ZAI_CODING_CN_API_KEY="${ZAI_CODING_CN_API_KEY:?export ZAI_CODING_CN_API_KEY first}"
+  RUN_PI=("$RUNTIME_DIR/node_modules/.bin/pi" --model zai-coding-cn/glm-5.2)
+fi
 
 # ---------- 3. 起pianist ----------
 
@@ -85,4 +91,4 @@ echo "   「用 pianist_bridge 查一下家里的工作台有哪些项目」"
 echo " 退出：输 /exit 或按两次 Ctrl+C"
 echo "=============================="
 echo
-exec "$RUNTIME_DIR/node_modules/.bin/pi" --model zai-coding-cn/glm-5.2
+exec "${RUN_PI[@]}"

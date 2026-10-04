@@ -9,6 +9,10 @@ import { spawnSync } from "node:child_process";
 const CWD = path.resolve(import.meta.dirname, "..");
 const UNIT = path.join(CWD, "deploy", "pianist-conductor.service");
 const INSTALL = path.join(CWD, "deploy", "install-conductor.sh");
+// T15 活一（2026-10-05）：install 会探真机钥匙柜（柜有 coding-plan → 不写 key 行）。
+// 全文件统一隔离到空柜——所有既有断言保持「过渡态」语义；柜分支专项断言在 5d。
+const emptyCredDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-install-emptycred-"));
+process.env.PORTALK_CRED_DIR = emptyCredDir;
 let pass = 0, total = 0;
 function check(name, ok, extra) { total++; if (ok) pass++; console.log(`${ok ? "PASS" : "FAIL"} ${name}${extra ? " — " + extra : ""}`); }
 
@@ -46,6 +50,7 @@ check("dry-run：exit=0 且打印计划（含 [dry-run] 标记与 600 权限声�
 check("dry-run：不动系统——env/unit 目标均未创建", !fs.existsSync(tmpEnv) && !fs.existsSync(tmpUnitDir));
 
 // ---- 5. tmp 沙盒真跑（SYSTEMCTL=: 吞掉 systemctl 步骤）：文件落地 + 权限 + key 不进 unit ----
+// （柜隔离已在文件头统一：PORTALK_CRED_DIR 指空柜——本节断言全部是「过渡态」语义）
 const real = spawnSync("bash", [INSTALL], { env: over, encoding: "utf8" });
 const envOk = real.status === 0 && fs.existsSync(tmpEnv) && fs.existsSync(path.join(tmpUnitDir, "pianist-conductor.service")) && fs.existsSync(path.join(tmpUnitDir, "pianist-shell.service"));
 check("真跑（旁路 tmp）：exit=0，env+unit 落地", envOk, (real.stderr || "").trim().slice(0, 200));
@@ -162,6 +167,27 @@ const budOver2 = { ...budOver, CONDUCTOR_DAILY_BUDGET: "5" };
 const budRun2 = spawnSync("bash", [INSTALL], { env: budOver2, encoding: "utf8" });
 check("预算钉：当前 env 带 → 新值写入（当前 env 优先于旧文件）",
 	budRun2.status === 0 && fs.readFileSync(budEnv, "utf8").includes("CONDUCTOR_DAILY_BUDGET=5"), (budRun2.stderr || "").trim().slice(0, 200));
+
+// ---- 10b. 柜分支（T15 活一）：柜有 coding-plan → env 文件不写 key 行，明文残留面收口 ----
+{
+	const tmpV = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-install-vault-"));
+	const credDir = path.join(tmpV, "cred");
+	fs.mkdirSync(credDir, { recursive: true });
+	fs.writeFileSync(path.join(credDir, "coding-plan"), "vault-dummy-value-not-real", { mode: 0o600 });
+	fs.chmodSync(path.join(credDir, "coding-plan"), 0o600);
+	const vEnv = path.join(tmpV, "pianist", "conductor.env");
+	fs.mkdirSync(path.dirname(vEnv), { recursive: true });
+	fs.writeFileSync(vEnv, "# old\nZAI_CODING_CN_API_KEY=stale-old-key\nCONDUCTOR_SVPS_SSH=the-remote-test-host\n");
+	const vOver = { ...process.env, PORTALK_CRED_DIR: credDir, ZAI_CODING_CN_API_KEY: "ambient-key-should-be-ignored", CONDUCTOR_ENV_FILE: vEnv, CONDUCTOR_UNIT_DEST: path.join(tmpV, "systemd"), CONDUCTOR_SYSTEMCTL: stub, CONDUCTOR_CGROUP_FILE: path.join(tmpV, "cg-none") };
+	const vRun = spawnSync("bash", [INSTALL], { env: vOver, encoding: "utf8" });
+	const vText = vRun.status === 0 ? fs.readFileSync(vEnv, "utf8") : "";
+	check("柜分支：柜有 coding-plan → env 文件不写 key 行（ambient env 里的明文也不写——柜优先于 env）",
+		vRun.status === 0 && !vText.includes("ZAI_CODING_CN_API_KEY=") && !vText.includes("ambient-key-should-be-ignored") && !vText.includes("vault-dummy-value-not-real"),
+		vText.split("\n").filter((l) => l.includes("ZAI")).join("; ") || "(无 key 行)");
+	check("柜分支：出声说明 key 走柜（听见即审计面）", vRun.status === 0 && vRun.stdout.includes("钥匙柜供 key"));
+	check("柜分支：缝行保全不受柜分支影响（SVPS_SSH 还在）", vRun.status === 0 && vText.includes("CONDUCTOR_SVPS_SSH=the-remote-test-host"));
+	fs.rmSync(tmpV, { recursive: true, force: true });
+}
 
 // ---- 11. 自保钉：活在 conductor cgroup 里 → 推迟重启出声，不自杀 ----
 const cgConductor = path.join(tmpBud, "cg-conductor");

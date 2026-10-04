@@ -46,7 +46,20 @@ NODE_MAJOR="$("$NODE_BIN" --version 2>/dev/null | grep -oE "v[0-9]+" | tr -d v |
 [[ -f "$SHELL_UNIT_SRC" ]] || die "shell unit 源不存在：$SHELL_UNIT_SRC（正典壳 unit——§2 遥测黑洞的根治件）"
 [[ -x "$NODE_BIN" ]] || die "node 不可执行：$NODE_BIN（unit ExecStart 钉的就是它）"
 [[ -f "$REPO_ROOT/src/conductor.mjs" ]] || die "conductor.mjs 不存在：$REPO_ROOT/src/conductor.mjs"
-[[ -n "${ZAI_CODING_CN_API_KEY:-}" ]] || die "当前环境没有 ZAI_CODING_CN_API_KEY——key 只从环境取，不给默认值不落 repo"
+
+# ---- 钥匙柜探测（T15 活一）：key 供给三态 ----
+#   柜有 coding-plan → 柜供（conductor 启动时自读，env 文件不再写 key 行——明文残留面就此收口）
+#   柜无 + 当前 env 有 → 过渡态：照旧写 env 文件（否则服务起不来），但出声点名这是残留
+#   双无 → 大声死（原来就这样）
+CRED_STORE="$REPO_ROOT/credentials/store.mjs"
+if [[ -f "$CRED_STORE" ]] && "$NODE_BIN" "$CRED_STORE" has coding-plan 2>/dev/null | grep -q '^true$'; then
+	KEY_FROM_VAULT=1
+elif [[ -z "${ZAI_CODING_CN_API_KEY:-}" ]]; then
+	die "钥匙柜里没有 coding-plan，且当前环境没有 ZAI_CODING_CN_API_KEY——两条路都断（不静默）"
+else
+	KEY_FROM_VAULT=0
+	say "过渡态：钥匙柜里没有 coding-plan，key 继续走 env 文件明文（残留面——放钥匙进柜后重跑本脚本即可收口）"
+fi
 
 say "repo=$REPO_ROOT node=$NODE_BIN"
 say "unit: $UNIT_SRC -> $UNIT_DEST"
@@ -90,16 +103,26 @@ if [[ -f "$ENV_FILE" ]]; then
 			EXTRA_ENV_LINES+="$line"$'\n'
 			say "env 重写保全既有缝行：$line（当前环境未带，文件里有——缝不因重装蒸发）"
 		fi
-	done < <(grep -E '^CONDUCTOR_[A-Z0-9_]+=' "$ENV_FILE" 2>/dev/null || true)
+		done < <(grep -E '^CONDUCTOR_[A-Z0-9_]+=' "$ENV_FILE" 2>/dev/null || true)
+fi
+if (( KEY_FROM_VAULT )); then
+	say "钥匙柜供 key（coding-plan 在柜）：env 文件不写 key 行——conductor 启动时经 credentials/env-source.mjs 自读"
 fi
 if (( DRY )); then
-	say "[dry-run] mkdir -p $(dirname "$ENV_FILE")；写 $ENV_FILE（ZAI_CODING_CN_API_KEY=***${BUDGET_LINE:+；$BUDGET_LINE}${TABLE_LINE:+；$TABLE_LINE}；表名缝无值时落注释行）；chmod 600"
+	if (( KEY_FROM_VAULT )); then
+		say "[dry-run] mkdir -p $(dirname "$ENV_FILE")；写 $ENV_FILE（key 走钥匙柜，env 文件不写 key 行${BUDGET_LINE:+；$BUDGET_LINE}${TABLE_LINE:+；$TABLE_LINE}；表名缝无值时落注释行）；chmod 600"
+	else
+		say "[dry-run] mkdir -p $(dirname "$ENV_FILE")；写 $ENV_FILE（ZAI_CODING_CN_API_KEY=***${BUDGET_LINE:+；$BUDGET_LINE}${TABLE_LINE:+；$TABLE_LINE}；表名缝无值时落注释行）；chmod 600"
+	fi
 else
 	mkdir -p "$(dirname "$ENV_FILE")"
 	umask 177 # 创建即 600，不留 group/other 可读的中间态窗口
 	{
 		echo "# pianist-conductor env（install-conductor.sh 生成，勿提交勿外传——路径在 repo 外）"
-		echo "ZAI_CODING_CN_API_KEY=$ZAI_CODING_CN_API_KEY"
+		# key 行三态（T15 活一）：柜供不写（明文残留面收口）；过渡态照写（服务要能起）。
+		if (( ! KEY_FROM_VAULT )); then
+			echo "ZAI_CODING_CN_API_KEY=$ZAI_CODING_CN_API_KEY"
+		fi
 		[[ -n "$BUDGET_LINE" ]] && echo "$BUDGET_LINE" || true
 		[[ -n "$TABLE_LINE" ]] && echo "$TABLE_LINE" || echo "# CONDUCTOR_EVENT_TABLE=<真表名>  # 远端库真表名（开源默认脱敏名 event-queue 撞 no such table 时解此）"
 		[[ -n "$EXTRA_ENV_LINES" ]] && printf '%s' "$EXTRA_ENV_LINES" || true

@@ -26,6 +26,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { envOrVault } from "../credentials/env-source.mjs";
 
 // ---------------------------------------------------------------------------
 // 参数
@@ -150,8 +151,8 @@ const env = {
 	PIANIST_AGENT_ID: "retropad-1",
 	PIANIST_SHELL_URL: SHELL_URL,
 	NO_COLOR: "1",
-	// key 传递：只走 env，仓库不带默认值
-	ZAI_CODING_CN_API_KEY: process.env.ZAI_CODING_CN_API_KEY,
+	// 钥匙柜供给（T15 活一）：同 conductor launchPart——柜优先，env 过渡回落，双无 undefined。
+	ZAI_CODING_CN_API_KEY: envOrVault("ZAI_CODING_CN_API_KEY", "coding-plan"),
 };
 // 分身不采集遥测（否则扫描器会看见复盘分身自己的循环）
 env.PIANIST_TELEMETRY = "off";
