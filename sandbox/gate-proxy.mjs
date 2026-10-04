@@ -3,13 +3,31 @@
 // relay 把字节原样搬到本代理（unix socket 跨 netns），白名单/硬拒/记账的判断全在这边（可信侧）。
 // 门禁不是囚室：预置白名单直接放行；硬拒的只有真泄密通道（内网管理面/环回/裸 IP）；
 // 白名单外的新端点先通后报——放行本次 + 首次落 journal。
+//
+// 钥匙柜内部端点（T15 活二）：目标 hostname 为保留域 vault.internal 的明文代理请求不出网、
+// 不过 decide，直接转墙外 brokerCore（credentials/broker.mjs）——沙箱内 agent 给 {VALUE} 模板，
+// 墙外读柜填值、直连真实目标、只回响应 body。key 永不进沙箱文本域；反探洞由 brokerCore 默认
+// 拒内网/环回/裸 IP 目标兜底（防借 broker 绕过 netns 探内网）。
 import dns from "node:dns/promises";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { appendJournalLine } from "./journal.mjs";
+import { brokerCore } from "../credentials/broker.mjs";
 
 const MAX_HEAD = 64 * 1024; // 代理请求头上限
+const VAULT_HOST = "vault.internal"; // 保留域（不撞真实域名），沙箱内 agent 隔墙喊钥匙的固定名
+const VAULT_MAX_BODY = 1024 * 1024; // /use 请求体上限（模板不该比这更大）
+const STATUS_TEXT = {
+	200: "OK",
+	400: "Bad Request",
+	403: "Forbidden",
+	404: "Not Found",
+	405: "Method Not Allowed",
+	413: "Payload Too Large",
+	500: "Internal Server Error",
+	502: "Bad Gateway",
+};
 
 // ---- IP/CIDR 最小实现（零依赖） ----
 function parseIp4(ip) {
@@ -48,8 +66,8 @@ function parseIp6(str) {
 		return null;
 	}
 }
-/** 解析 "a.b.c.d/n" 或 "x::/n" → {family, net, bits} */
-function parseCidr(cidr) {
+/** 解析 "a.b.c.d/n" 或 "x::/n" → {family, net, bits}（credentials/broker.mjs 反探洞共用） */
+export function parseCidr(cidr) {
 	const [addr, bitsStr] = cidr.split("/");
 	const bits = Number(bitsStr);
 	if (net.isIPv4(addr)) {
@@ -64,7 +82,8 @@ function parseCidr(cidr) {
 			0xffffffffffffffffffffffffffffffffn;
 	return { family: 6, net: v & mask, bits };
 }
-function ipInCidrs(ip, cidrs) {
+/** IP 是否落在任一 CIDR 内（credentials/broker.mjs 反探洞共用） */
+export function ipInCidrs(ip, cidrs) {
 	const v4 = parseIp4(ip);
 	if (v4 !== null) {
 		for (const c of cidrs) {
@@ -109,6 +128,8 @@ export function startGateProxy({ policy, scratchDir, agent = "pianist", journalP
 	const cidrs = policy.network.hardDeny.cidrs.map(parseCidr).filter(Boolean);
 	const seen = new Set(); // 本次进程已记账的新端点（每端点每回合只落一次账）
 	const journaledHosts = [];
+	// 测试逃生门（仅测试置位；不设=拒内网，默认安全）：开时 brokerCore 允许 private 目标（mock 起在环回上用）
+	const allowPrivateTargets = process.env.PORTALK_SANDBOX_BROKER_ALLOW_PRIVATE === "1";
 
 	function journalNewEndpoint(host) {
 		if (seen.has(host)) return;
@@ -148,14 +169,6 @@ export function startGateProxy({ policy, scratchDir, agent = "pianist", journalP
 		return { allow: true, whitelisted };
 	}
 
-	function respond(sock, code, reason) {
-		const body = `sandbox-gate: ${reason}\n`;
-		try {
-			sock.end(
-				`HTTP/1.1 ${code} ${code === 403 ? "Forbidden" : "Bad Gateway"}\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
-			);
-		} catch {}
-	}
 	function pipe(a, b) {
 		a.pipe(b);
 		b.pipe(a);
@@ -165,31 +178,129 @@ export function startGateProxy({ policy, scratchDir, agent = "pianist", journalP
 
 	const server = net.createServer((sock) => {
 		let buf = Buffer.alloc(0);
-		let handled = false; // 是否已开始透传/应答
+		let dispatched = false; // 头已消费、方向已定（decide/connect 在途时继续攒字节但不重解析）
+		let pipeEngaged = false; // 透传管道已接管，此后数据归管道
+		let answered = false; // 已回应答（连接将关），后续字节忽略
+		let vaultReq = null; // vault.internal 请求攒 body 中：{ method, u, head, headEnd }
+
+		const reply = (code, contentType, body) => {
+			if (answered) return;
+			answered = true;
+			try {
+				sock.end(
+					`HTTP/1.1 ${code} ${STATUS_TEXT[code] ?? "Error"}\r\nContent-Type: ${contentType}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+				);
+			} catch {}
+		};
+		const replyText = (code, text) =>
+			reply(code, "text/plain; charset=utf-8", `sandbox-gate: ${text}\n`);
+		const replyVault = (code, text) =>
+			reply(code, "text/plain; charset=utf-8", `vault.internal: ${text}\n`);
+
+		/** vault.internal 请求：按 Content-Length 攒足请求体再处理（普通代理路径无需攒 body，直接透传） */
+		const vaultStep = () => {
+			const { method, u, head, headEnd } = vaultReq;
+			const lines = head.split("\r\n").slice(1);
+			let contentLength = null;
+			let clCount = 0;
+			let chunked = false;
+			for (const h of lines) {
+				if (/^content-length:/i.test(h)) {
+					clCount++;
+					const m = h.match(/^content-length:\s*(\d+)\s*$/i);
+					if (m) contentLength = Number(m[1]);
+				}
+				if (/^transfer-encoding:\s*chunked/i.test(h)) chunked = true;
+			}
+			if (clCount > 1) {
+				vaultReq = null;
+				return replyVault(400, "拒绝：多个 Content-Length 头");
+			}
+			if (chunked) {
+				vaultReq = null;
+				return replyVault(400, "不收 Transfer-Encoding: chunked（请带 Content-Length）");
+			}
+			const need = contentLength ?? 0;
+			if (need > VAULT_MAX_BODY) {
+				vaultReq = null;
+				return replyVault(413, `请求体超限（上限 ${VAULT_MAX_BODY} 字节）`);
+			}
+			if (buf.length < headEnd + need) return; // 攒足再处理
+			const bodyBuf = buf.subarray(headEnd, headEnd + need);
+			vaultReq = null;
+			handleVaultUse(method, u, bodyBuf).catch((e) =>
+				replyVault(500, `内部错误：${e?.message ?? e}`),
+			);
+		};
+
+		/** vault.internal/use：形状校验 → 墙外 brokerCore（读柜→授权→反探洞→填值→直连）→ 只回响应 body */
+		async function handleVaultUse(method, u, bodyBuf) {
+			if (u.pathname !== "/use")
+				return replyVault(404, `只开 /use 端点（收到 ${u.pathname}）`);
+			if (method !== "POST") return replyVault(405, `/use 只收 POST（收到 ${method}）`);
+			let req;
+			try {
+				req = JSON.parse(bodyBuf.toString("utf8"));
+			} catch {
+				return replyVault(400, "请求体不是合法 JSON（形状：{ name, url, method?, header?, body? }）");
+			}
+			const bad = (msg) => replyVault(400, `${msg}（形状：{ name, url, method?, header?, body? }）`);
+			if (typeof req?.name !== "string" || !req.name) return bad("缺 name：钥匙名（字符串）");
+			if (typeof req?.url !== "string" || !req.url) return bad("缺 url：目标（字符串）");
+			if (req.method !== undefined && typeof req.method !== "string") return bad("method 需为字符串");
+			let headers = [];
+			if (req.header !== undefined) {
+				if (typeof req.header === "string") headers = [req.header];
+				else if (Array.isArray(req.header) && req.header.every((h) => typeof h === "string"))
+					headers = req.header;
+				else return bad("header 需为字符串或字符串数组（模板，{VALUE} 占位）");
+			}
+			if (req.body !== undefined && typeof req.body !== "string")
+				return bad("body 需为字符串（模板，{VALUE} 占位）");
+
+			const r = await brokerCore({
+				name: req.name,
+				url: req.url,
+				method: req.method ?? "POST",
+				headers,
+				body: req.body,
+				allowPrivate: allowPrivateTargets, // 默认 false：不设 env=拒内网（防借 broker 探洞）
+				journalAction: "use-sandbox-broker",
+				agent: policy.identity?.agent ?? agent, // 记账工牌=沙箱工牌，不是 pianist 默认值
+				intentPrefix: "sandbox-broker",
+			});
+			if (!r.ok) return replyVault(r.status, r.error); // 错误文本已在 brokerCore 过 scanText
+			reply(200, "application/octet-stream", r.body); // 响应 body 已过 scanText：值零回流沙箱
+		}
+
 		sock.on("data", (chunk) => {
-			buf = handled ? buf : Buffer.concat([buf, chunk]); // 透传开始前持续攒
-			if (handled) return;
+			if (pipeEngaged) return; // 管道已接管
+			buf = Buffer.concat([buf, chunk]);
+			if (answered) return;
+			if (vaultReq) return vaultStep();
+			if (dispatched) return; // 在途：攒着，等接通上游后随剩余字节一并写出去
 			const idx = buf.indexOf("\r\n\r\n");
 			if (idx < 0) {
-				if (buf.length > MAX_HEAD) respond(sock, 400, "请求头超限");
+				if (buf.length > MAX_HEAD) replyText(400, "请求头超限");
 				return;
 			}
-			handled = true;
 			const head = buf.subarray(0, idx).toString("latin1");
 			const line = head.split("\r\n")[0];
 
 			const conn = line.match(/^CONNECT\s+(\S+)\s+HTTP\/[\d.]+$/i);
 			if (conn) {
 				const { host, port } = parseHostPort(conn[1], 443);
+				dispatched = true;
 				decide(host).then((d) => {
-					if (!d.allow) return respond(sock, d.code, d.reason);
+					if (!d.allow) return replyText(d.code, d.reason);
 					const up = net.connect(port, host);
 					up.on("connect", () => {
 						sock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 						if (buf.length > idx + 4) up.write(buf.subarray(idx + 4));
+						pipeEngaged = true;
 						pipe(sock, up);
 					});
-					up.on("error", (e) => respond(sock, 502, `upstream: ${e.message}`));
+					up.on("error", (e) => replyText(502, `upstream: ${e.message}`));
 				});
 				return;
 			}
@@ -200,12 +311,19 @@ export function startGateProxy({ policy, scratchDir, agent = "pianist", journalP
 				try {
 					u = new URL(target);
 				} catch {
-					return respond(sock, 400, "无法解析请求目标");
+					return replyText(400, "无法解析请求目标");
 				}
 				if (u.protocol !== "http:")
-					return respond(sock, 502, "明文代理只收 http 绝对地址；https 请走 CONNECT 隧道");
+					return replyText(502, "明文代理只收 http 绝对地址；https 请走 CONNECT 隧道");
+				// 钥匙柜内部端点：vault.internal 不出网、不过 decide，转墙外 brokerCore
+				if (u.hostname.toLowerCase().replace(/\.$/, "") === VAULT_HOST) {
+					dispatched = true;
+					vaultReq = { method, u, head, headEnd: idx + 4 };
+					return vaultStep();
+				}
+				dispatched = true;
 				decide(u.hostname).then((d) => {
-					if (!d.allow) return respond(sock, d.code, d.reason);
+					if (!d.allow) return replyText(d.code, d.reason);
 					const up = net.connect(Number(u.port) || 80, u.hostname);
 					up.on("connect", () => {
 						const restHead = head.split("\r\n").slice(1).join("\r\n");
@@ -213,13 +331,14 @@ export function startGateProxy({ policy, scratchDir, agent = "pianist", journalP
 							`${method} ${u.pathname}${u.search} HTTP/1.1\r\n${restHead}\r\n\r\n`,
 						);
 						if (buf.length > idx + 4) up.write(buf.subarray(idx + 4));
+						pipeEngaged = true;
 						pipe(sock, up);
 					});
-					up.on("error", (e) => respond(sock, 502, `upstream: ${e.message}`));
+					up.on("error", (e) => replyText(502, `upstream: ${e.message}`));
 				});
 				return;
 			}
-			respond(sock, 400, "非代理协议（本端口只做 HTTP 门禁代理）");
+			replyText(400, "非代理协议（本端口只做 HTTP 门禁代理）");
 		});
 		sock.on("error", () => {});
 	});

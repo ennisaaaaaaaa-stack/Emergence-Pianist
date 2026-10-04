@@ -199,6 +199,7 @@ function run(args, { input = "" } = {}) {
 		"--method", "POST",
 		"--header", "Authorization: Bearer {VALUE}",
 		"--body", '{"ping":1}',
+		"--allow-private", // mock 起在环回上：测试逃生门（brokerCore 默认拒内网/环回/裸 IP，见 sandbox-broker-test）
 	]);
 	check2("broker: exit 0", r.code === 0);
 	check2("broker: mock 收到含值 header（精确比对出布尔）", lastReq.authorization === `Bearer ${V_BROKER}`);
