@@ -11,6 +11,13 @@ const CONDUCTOR = path.join(CWD, "src", "conductor.mjs");
 let pass = 0, total = 0;
 function check(name, ok, extra) { total++; if (ok) pass++; console.log(`${ok ? "PASS" : "FAIL"} ${name}${extra ? " — " + extra : ""}`); }
 
+// 密封底（10/5 体验反馈六号缝）：conductor 会话里跑测试，ambient CONDUCTOR_* 顺 process.env 漏给被测进程——
+// 剥净起底 + 头顶灌假 ambient 自证（与 conductor-install-test 同款方子，密封再破自己的断言会叫）。
+Object.assign(process.env, { CONDUCTOR_EVENT_TABLE: "ambient-seal-probe-not-real", CONDUCTOR_DAILY_BUDGET: "77", CONDUCTOR_SVPS_SSH: "ambient-seal-host-not-real", CONDUCTOR_SPOOR_FACE_COOLDOWN_H: "99" });
+const CLEAN_ENV = { ...process.env };
+for (const k of Object.keys(CLEAN_ENV)) if (/^CONDUCTOR_/.test(k)) delete CLEAN_ENV[k];
+
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-selfcheck-"));
 
 // cgroup 夹具（v2 单行 / v1 多行 / 无 .service——systemd-run 的 .scope 形状）
@@ -27,7 +34,7 @@ fs.chmodSync(path.join(tmp, "sc-ok"), 0o755);
 fs.chmodSync(path.join(tmp, "sc-no"), 0o755);
 
 function run(cgroupFile, systemctl) {
-	const env = { ...process.env };
+	const env = { ...CLEAN_ENV };
 	if (systemctl) env.CONDUCTOR_SYSTEMCTL = systemctl;
 	const r = spawnSync(process.execPath, [CONDUCTOR, "--self-check", "--cgroup-file", cgroupFile], { env, encoding: "utf8" });
 	return { code: r.status, out: (r.stdout || "") + (r.stderr || "") };

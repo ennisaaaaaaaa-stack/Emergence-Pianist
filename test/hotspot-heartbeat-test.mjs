@@ -14,6 +14,13 @@ const CONDUCTOR = path.join(CWD, "src", "conductor.mjs");
 let pass = 0, total = 0;
 function check(name, ok, extra) { total++; if (ok) pass++; console.log(`${ok ? "PASS" : "FAIL"} ${name}${extra ? " — " + extra : ""}`); }
 
+// 密封底（10/5 体验反馈六号缝）：conductor 会话里跑测试，ambient CONDUCTOR_* 顺 process.env 漏给被测进程——
+// 剥净起底 + 头顶灌假 ambient 自证（与 conductor-install-test 同款方子，密封再破自己的断言会叫）。
+Object.assign(process.env, { CONDUCTOR_EVENT_TABLE: "ambient-seal-probe-not-real", CONDUCTOR_DAILY_BUDGET: "77", CONDUCTOR_SVPS_SSH: "ambient-seal-host-not-real", CONDUCTOR_SPOOR_FACE_COOLDOWN_H: "99" });
+const CLEAN_ENV = { ...process.env };
+for (const k of Object.keys(CLEAN_ENV)) if (/^CONDUCTOR_/.test(k)) delete CLEAN_ENV[k];
+
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hotspot-heartbeat-"));
 const stateDir = path.join(tmp, "state");
 const telDir = path.join(tmp, "telemetry");
@@ -40,7 +47,7 @@ const today = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
 function once(extra = {}, args = ["--once"]) {
 	return spawnSync(process.execPath, [CONDUCTOR, ...args], {
 		env: {
-			...process.env,
+			...CLEAN_ENV,
 			CONDUCTOR_PARTS: "wander",
 			CONDUCTOR_IDLE_NOW: "1",
 			CONDUCTOR_STATE_DIR: stateDir,
@@ -86,7 +93,7 @@ const failStateFile = path.join(failStateDir, "state.json");
 const out4 = path.join(tmp, "hotspots-fail", "latest.json");
 const onceFail = (extra = {}) => spawnSync(process.execPath, [CONDUCTOR, "--once"], {
 	env: {
-		...process.env,
+		...CLEAN_ENV,
 		CONDUCTOR_PARTS: "wander",
 		CONDUCTOR_IDLE_NOW: "1",
 		CONDUCTOR_STATE_DIR: failStateDir,
@@ -115,7 +122,7 @@ check("场4c：冷却过期再战（上膛行回来）", r4c.status === 0 && r4c
 
 // ---- 场5：--status 面可见（心跳死活不用翻 journal 猜） ----
 const r5 = spawnSync(process.execPath, [CONDUCTOR, "--status"], {
-	env: { ...process.env, CONDUCTOR_STATE_DIR: failStateDir, PIANIST_TELEMETRY_DIR: telDir }, encoding: "utf8",
+	env: { ...CLEAN_ENV, CONDUCTOR_STATE_DIR: failStateDir, PIANIST_TELEMETRY_DIR: telDir }, encoding: "utf8",
 });
 let st5 = null;
 try { st5 = JSON.parse(r5.stdout); } catch {}

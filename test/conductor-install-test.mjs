@@ -16,6 +16,15 @@ process.env.PORTALK_CRED_DIR = emptyCredDir;
 let pass = 0, total = 0;
 function check(name, ok, extra) { total++; if (ok) pass++; console.log(`${ok ? "PASS" : "FAIL"} ${name}${extra ? " — " + extra : ""}`); }
 
+
+// ---- 0. 密封底（2026-10-05，体验反馈六号缝）：conductor 会话里跑测试，ambient CONDUCTOR_* 顺 process.env 漏给被测进程 ----
+// 病例：ambient CONDUCTOR_EVENT_TABLE 让「表名缝」两断言假红（外部突变复现过）；5c 段早有剥净先例但只钉了一段=钉子钉半根。
+// 方子：全文件统一 CLEAN_ENV 起底；头顶故意灌假 ambient——整套测试从此跑在污染环境里，密封再破自己的断言会叫。
+Object.assign(process.env, { CONDUCTOR_EVENT_TABLE: "ambient-seal-probe-not-real", CONDUCTOR_DAILY_BUDGET: "77", CONDUCTOR_SVPS_SSH: "ambient-seal-host-not-real", CONDUCTOR_SPOOR_FACE_COOLDOWN_H: "99" });
+const CLEAN_ENV = { ...process.env };
+for (const k of Object.keys(CLEAN_ENV)) if (/^CONDUCTOR_/.test(k)) delete CLEAN_ENV[k];
+check("密封：头顶灌假 ambient 后 CLEAN_ENV 剥净一个不剩（破封即红）", !Object.keys(CLEAN_ENV).some((k) => /^CONDUCTOR_/.test(k)) && process.env.CONDUCTOR_EVENT_TABLE === "ambient-seal-probe-not-real");
+
 const unit = fs.readFileSync(UNIT, "utf8");
 
 // ---- 1. unit 关键字段：重启姿势 / 依赖序 / env 在 repo 外 / 无 key ----
@@ -35,7 +44,7 @@ check("systemd-analyze verify 通过（exit=0）", ver.status === 0, ((ver.stdou
 
 // ---- 3. install 脚本：bash -n 语法 + 缺 key 大声死（不装哑巴） ----
 check("install：bash -n 语法通过", spawnSync("bash", ["-n", INSTALL]).status === 0);
-const noKeyEnv = { ...process.env };
+const noKeyEnv = { ...CLEAN_ENV };
 delete noKeyEnv.ZAI_CODING_CN_API_KEY;
 const noKey = spawnSync("bash", [INSTALL, "--dry-run"], { env: noKeyEnv, encoding: "utf8" });
 check("install：缺 ZAI_CODING_CN_API_KEY → 非零退出 + stderr 出声", noKey.status !== 0 && (noKey.stderr || "").includes("不静默") && (noKey.stderr || "").includes("ZAI_CODING_CN_API_KEY"));
@@ -44,7 +53,7 @@ check("install：缺 ZAI_CODING_CN_API_KEY → 非零退出 + stderr 出声", no
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-install-test-"));
 const tmpEnv = path.join(tmp, "pianist", "conductor.env");
 const tmpUnitDir = path.join(tmp, "systemd");
-const over = { ...process.env, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: tmpEnv, CONDUCTOR_UNIT_DEST: tmpUnitDir, CONDUCTOR_SYSTEMCTL: ":" };
+const over = { ...CLEAN_ENV, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: tmpEnv, CONDUCTOR_UNIT_DEST: tmpUnitDir, CONDUCTOR_SYSTEMCTL: ":" };
 const dry = spawnSync("bash", [INSTALL, "--dry-run"], { env: over, encoding: "utf8" });
 check("dry-run：exit=0 且打印计划（含 [dry-run] 标记与 600 权限声明）", dry.status === 0 && dry.stdout.includes("[dry-run]") && dry.stdout.includes("600"));
 check("dry-run：不动系统——env/unit 目标均未创建", !fs.existsSync(tmpEnv) && !fs.existsSync(tmpUnitDir));
@@ -85,9 +94,7 @@ const tmpSeam = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-install-seam-")
 const seamEnvF = path.join(tmpSeam, "pianist", "conductor.env");
 fs.mkdirSync(path.dirname(seamEnvF), { recursive: true });
 fs.writeFileSync(seamEnvF, "# old\nZAI_CODING_CN_API_KEY=stale\nCONDUCTOR_SVPS_SSH=the-remote-test-host\nCONDUCTOR_SPOOR_FACE_COOLDOWN_H=6\n");
-const seamClean = { ...process.env };
-for (const k of Object.keys(seamClean)) if (/^CONDUCTOR_/.test(k)) delete seamClean[k];
-const seamOver = { ...seamClean, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: seamEnvF, CONDUCTOR_UNIT_DEST: path.join(tmpSeam, "systemd"), CONDUCTOR_SYSTEMCTL: ":", CONDUCTOR_CGROUP_FILE: path.join(tmpSeam, "cg-none") };
+const seamOver = { ...CLEAN_ENV, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: seamEnvF, CONDUCTOR_UNIT_DEST: path.join(tmpSeam, "systemd"), CONDUCTOR_SYSTEMCTL: ":", CONDUCTOR_CGROUP_FILE: path.join(tmpSeam, "cg-none") };
 const seamRun = spawnSync("bash", [INSTALL], { env: seamOver, encoding: "utf8" });
 const seamText = seamRun.status === 0 ? fs.readFileSync(seamEnvF, "utf8") : "";
 check("缝保全：SVPS_SSH 等既有 CONDUCTOR_* 行重装不蒸发且出声",
@@ -132,7 +139,7 @@ const rec = path.join(tmpAlien, "systemctl.log");
 const stub = path.join(tmpAlien, "systemctl-stub");
 fs.writeFileSync(stub, `#!/usr/bin/env bash\necho "$*" >> "${rec}"\ncase "$1" in is-enabled|is-active|disable|stop|enable) exit 0;; show) exit 0;; esac\nexit 0\n`);
 fs.chmodSync(stub, 0o755);
-const alienEnv = { ...process.env, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: path.join(tmpAlien, "pianist", "conductor.env"), CONDUCTOR_UNIT_DEST: alienDir, CONDUCTOR_SYSTEMCTL: stub };
+const alienEnv = { ...CLEAN_ENV, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: path.join(tmpAlien, "pianist", "conductor.env"), CONDUCTOR_UNIT_DEST: alienDir, CONDUCTOR_SYSTEMCTL: stub };
 const alienRun = spawnSync("bash", [INSTALL], { env: alienEnv, encoding: "utf8" });
 const recText = alienRun.status === 0 && fs.existsSync(rec) ? fs.readFileSync(rec, "utf8") : "";
 check("残骸：异名同源 unit 被 disable（只 disable 不 stop——§3 钉子）", alienRun.status === 0 && alienRun.stdout.includes("残骸发现：portalk-conductor.service") && /disable portalk-conductor\.service/.test(recText) && !/stop portalk-conductor/.test(recText), (alienRun.stderr || "").trim().slice(0, 200));
@@ -156,8 +163,7 @@ const tmpBud = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-install-budget-"
 const budEnv = path.join(tmpBud, "pianist", "conductor.env");
 fs.mkdirSync(path.dirname(budEnv), { recursive: true });
 fs.writeFileSync(budEnv, "# old\nZAI_CODING_CN_API_KEY=stale\nCONDUCTOR_DAILY_BUDGET=20\n");
-const budEnvNoBudget = { ...process.env, CONDUCTOR_DAILY_BUDGET: undefined };
-delete budEnvNoBudget.CONDUCTOR_DAILY_BUDGET;
+const budEnvNoBudget = { ...CLEAN_ENV };
 const budOver = { ...budEnvNoBudget, ZAI_CODING_CN_API_KEY: "test-dummy-key-not-real", CONDUCTOR_ENV_FILE: budEnv, CONDUCTOR_UNIT_DEST: path.join(tmpBud, "systemd"), CONDUCTOR_SYSTEMCTL: stub, CONDUCTOR_CGROUP_FILE: path.join(tmpAlien, "cg-none") };
 const budRun = spawnSync("bash", [INSTALL], { env: budOver, encoding: "utf8" });
 const budText = budRun.status === 0 ? fs.readFileSync(budEnv, "utf8") : "";
@@ -178,7 +184,7 @@ check("预算钉：当前 env 带 → 新值写入（当前 env 优先于旧文�
 	const vEnv = path.join(tmpV, "pianist", "conductor.env");
 	fs.mkdirSync(path.dirname(vEnv), { recursive: true });
 	fs.writeFileSync(vEnv, "# old\nZAI_CODING_CN_API_KEY=stale-old-key\nCONDUCTOR_SVPS_SSH=the-remote-test-host\n");
-	const vOver = { ...process.env, PORTALK_CRED_DIR: credDir, ZAI_CODING_CN_API_KEY: "ambient-key-should-be-ignored", CONDUCTOR_ENV_FILE: vEnv, CONDUCTOR_UNIT_DEST: path.join(tmpV, "systemd"), CONDUCTOR_SYSTEMCTL: stub, CONDUCTOR_CGROUP_FILE: path.join(tmpV, "cg-none") };
+	const vOver = { ...CLEAN_ENV, PORTALK_CRED_DIR: credDir, ZAI_CODING_CN_API_KEY: "ambient-key-should-be-ignored", CONDUCTOR_ENV_FILE: vEnv, CONDUCTOR_UNIT_DEST: path.join(tmpV, "systemd"), CONDUCTOR_SYSTEMCTL: stub, CONDUCTOR_CGROUP_FILE: path.join(tmpV, "cg-none") };
 	const vRun = spawnSync("bash", [INSTALL], { env: vOver, encoding: "utf8" });
 	const vText = vRun.status === 0 ? fs.readFileSync(vEnv, "utf8") : "";
 	check("柜分支：柜有 coding-plan → env 文件不写 key 行（ambient env 里的明文也不写——柜优先于 env）",

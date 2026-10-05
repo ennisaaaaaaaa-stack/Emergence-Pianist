@@ -15,11 +15,18 @@ const CWD = path.resolve(import.meta.dirname, "..");
 let pass = 0, total = 0;
 function check(name, ok, extra) { total++; if (ok) pass++; console.log(`${ok ? "PASS" : "FAIL"} ${name}${extra ? " — " + extra : ""}`); }
 
+// 密封底（10/5 体验反馈六号缝）：conductor 会话里跑测试，ambient CONDUCTOR_* 顺 process.env 漏给被测进程——
+// 剥净起底 + 头顶灌假 ambient 自证（与 conductor-install-test 同款方子，密封再破自己的断言会叫）。
+Object.assign(process.env, { CONDUCTOR_EVENT_TABLE: "ambient-seal-probe-not-real", CONDUCTOR_DAILY_BUDGET: "77", CONDUCTOR_SVPS_SSH: "ambient-seal-host-not-real", CONDUCTOR_SPOOR_FACE_COOLDOWN_H: "99" });
+const CLEAN_ENV = { ...process.env };
+for (const k of Object.keys(CLEAN_ENV)) if (/^CONDUCTOR_/.test(k)) delete CLEAN_ENV[k];
+
+
 function runOnce(root, part = "spoor-session") {
 	const r = spawnSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], {
 		// 预算闸隔离：dailySpendYen 默认读仓内真实 data/telemetry——真机当天烧≥2 元会硬停拦住抽卡，
 		// 测试被真实账本劫持。指到 tmp 空账本（与 queue-e2e/todo-review 的隔离姿势同款）。
-		env: { ...process.env, CONDUCTOR_STIGMERGY_ROOT: root, CONDUCTOR_PARTS: part, CONDUCTOR_STATE_DIR: path.join(root, "state"), CONDUCTOR_IDLE_NOW: "1", PIANIST_TELEMETRY_DIR: path.join(root, "tel") },
+		env: { ...CLEAN_ENV, CONDUCTOR_STIGMERGY_ROOT: root, CONDUCTOR_PARTS: part, CONDUCTOR_STATE_DIR: path.join(root, "state"), CONDUCTOR_IDLE_NOW: "1", PIANIST_TELEMETRY_DIR: path.join(root, "tel") },
 		encoding: "utf8",
 	});
 	return r.stdout + "\n" + r.stderr; // 降级 warn 在 stderr——并流才看得见
