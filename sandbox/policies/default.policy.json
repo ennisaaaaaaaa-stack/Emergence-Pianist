@@ -27,7 +27,11 @@
   },
   "name": "default",
   "version": 1,
-  "identity": { "agent": "pianist", "keypair": null, "sig": null },
+  "identity": {
+    "agent": "pianist",
+    "keypair": null,
+    "sig": null
+  },
   "network": {
     "mode": "allowlist-proxy",
     "proxyPort": 8788,
@@ -60,9 +64,22 @@
     }
   },
   "filesystem": {
-    "readOnly": ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/dev"],
-    "readWrite": ["/tmp", "REPO_HOME"],
-    "readWriteFiles": ["/dev/null"]
+    "readOnly": [
+      "/usr",
+      "/lib",
+      "/lib64",
+      "/bin",
+      "/sbin",
+      "/etc",
+      "/dev"
+    ],
+    "readWrite": [
+      "/tmp",
+      "/root/portalk-runtime"
+    ],
+    "readWriteFiles": [
+      "/dev/null"
+    ]
   },
   "scratchDirPattern": "/tmp/sandbox-scratch-<pid>"
 }

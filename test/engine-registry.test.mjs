@@ -42,7 +42,7 @@ check("注册表：重档无实现挂载（run 空）", ENGINES.microvm.run === 
 	const r = spawnSync(
 		process.execPath,
 		["sandbox/run-sandboxed.mjs", "--policy", "sandbox/policies/default.policy.json", "--", "node", "-e", "console.log('t12-ok')"],
-		{ encoding: "utf8", timeout: 60_000, cwd: "REPO_HOME" },
+		{ encoding: "utf8", timeout: 60_000, cwd: "/root/portalk-runtime" },
 	);
 	check("契约链路：default 策略（无 engine 字段）真跑成功", r.status === 0 && r.stdout.includes("t12-ok"));
 }
@@ -56,7 +56,7 @@ check("注册表：重档无实现挂载（run 空）", ENGINES.microvm.run === 
 	const r = spawnSync(
 		process.execPath,
 		["sandbox/run-sandboxed.mjs", "--policy", tmpPolicy, "--", "node", "-e", "console.log('t12-explicit')"],
-		{ encoding: "utf8", timeout: 60_000, cwd: "REPO_HOME" },
+		{ encoding: "utf8", timeout: 60_000, cwd: "/root/portalk-runtime" },
 	);
 	check("契约链路：显式 engine:kernel_primitives 放行真跑", r.status === 0 && r.stdout.includes("t12-explicit"));
 	fs.rmSync(tmpPolicy, { force: true });
@@ -71,7 +71,7 @@ check("注册表：重档无实现挂载（run 空）", ENGINES.microvm.run === 
 	const r = spawnSync(
 		process.execPath,
 		["sandbox/run-sandboxed.mjs", "--policy", tmpPolicy, "--", "true"],
-		{ encoding: "utf8", timeout: 60_000, cwd: "REPO_HOME" },
+		{ encoding: "utf8", timeout: 60_000, cwd: "/root/portalk-runtime" },
 	);
 	check("契约链路：engine:microvm CLI 全链路拒绝（非 0 退出）", r.status === 125 && /接口位未施工/.test(r.stderr));
 	fs.rmSync(tmpPolicy, { force: true });
