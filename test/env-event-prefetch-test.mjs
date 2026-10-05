@@ -107,9 +107,9 @@ check("彩排C：真空——牌面 0 条 + 文案明说「可达且无新事件
 // ——systemd EnvironmentFile 不剥行内 #，值连注释一起进 SQL → no such table，fetch 侧修因行
 // 还会误导（缝写了，只是写歪）。两钉：①真名（无横杠）注入后全链路活 ②带注释值病名出声点名格式。
 const DB_REAL = path.join(tmp, "real.db");
-const mkReal = spawnSync("sqlite3", [DB_REAL, `CREATE TABLE event-queue (id INTEGER, thread_id INTEGER, cosine REAL, signal_text TEXT, signal_source TEXT, logged_at TEXT, replay_day TEXT);
-INSERT INTO event-queue VALUES (11, 3, 0.9, 'real-row', 'user_message', '2026-10-05T00:00:00Z', NULL);`], { encoding: "utf8" });
-check("真名夹具库就位（无横杠表名 event-queue）", mkReal.status === 0, (mkReal.stderr || "").trim().slice(0, 120));
+const mkReal = spawnSync("sqlite3", [DB_REAL, `CREATE TABLE "event-queue" (id INTEGER, thread_id INTEGER, cosine REAL, signal_text TEXT, signal_source TEXT, logged_at TEXT, replay_day TEXT);
+INSERT INTO "event-queue" VALUES (11, 3, 0.9, 'real-row', 'user_message', '2026-10-05T00:00:00Z', NULL);`], { encoding: "utf8" });
+check("真名夹具库就位（表名 event-queue，横杠形状加引号）", mkReal.status === 0, (mkReal.stderr || "").trim().slice(0, 120));
 const envReal = { ...env, CONDUCTOR_STATE_DIR: path.join(tmp, "state-real"), CONDUCTOR_MEMORY_DB: DB_REAL, CONDUCTOR_EVENT_TABLE: "event-queue" };
 fs.mkdirSync(envReal.CONDUCTOR_STATE_DIR, { recursive: true });
 const runReal = spawnSync(process.execPath, [CONDUCTOR, "--once", "--dry-run"], { env: envReal, encoding: "utf8" });
