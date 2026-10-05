@@ -2,7 +2,7 @@
 // 验证链（任务书§5逐条）：
 //   1) 引导器可编译；执行器跑 node -e 'ok' 出 ok
 //   2) Landlock 挡 /mnt/c（the user Windows 目录物理不可达，ENOENT/EACCES）
-//   3) Landlock 挡 REPO_HOME 之外的 /root（读 /.bashrc EACCES）
+//   3) Landlock 挡工作区之外的 /root（读 /root/.bashrc EACCES）
 //   4) Landlock 放行 repo 自身读写（施工期自见）+ 暂存区可写
 //   5) Seccomp 拒 mount（EPERM）+ 拒 unshare（顺序证明：自己的 netns 先开完才装过滤器）
 //   6) netns：ip addr 只见 lo；连 127.6.6.6:9999 被拒
@@ -100,9 +100,9 @@ const IPT_BEFORE = iptablesSnapshot();
 
 // ---- 3) Landlock 挡 repo 外的 /root ----
 {
-	const r = await sandbox(["cat", "/.bashrc"]);
+	const r = await sandbox(["cat", "/root/.bashrc"]);
 	check(
-		`Landlock：读 /.bashrc 被拒（EACCES）`,
+		`Landlock：读 /root/.bashrc 被拒（EACCES）`,
 		r.code !== 0 && /permission denied/i.test(r.stderr),
 	);
 }
