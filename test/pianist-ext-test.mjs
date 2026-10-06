@@ -122,6 +122,27 @@ const r5d = await withMockShell(async (_h2, t2) => {
 }, { "/tools/invoke": { status: 200, deferred: true, approval: { id: "ap-1" } } });
 console.log("deferred approval returns, no throw:", r5d?.details?.wired === true && String(r5d?.content?.[0]?.text).includes("deferred"));
 
+// 5e) MCP 层软错也不许隐形（2026-10-07 wander，接③线深一层）：spoor 提供者原样透传
+//     MCP result {content,isError:true}（pydantic 缺参 4xx 等）——返回值同样永远
+//     isError:false，热点层数不到（10-06 第四班预言被证伪的缝）。必须 throw 且
+//     message 带提供者原文。（mock 壳语义：route 带 status 时响应体=整个 route 对象）
+const r5e = await withMockShell(async (_h2, t2) => {
+	try {
+		await t2[0].execute("t12", { action: "spoor_status", payload: {} }, undefined, undefined, {});
+		return { threw: false, msg: "" };
+	} catch (e) {
+		return { threw: true, msg: String(e?.message) };
+	}
+}, { "/tools/invoke": { status: 200, content: [{ type: "text", text: "Error executing tool workbench_status: project Field required [type=missing]" }], isError: true } });
+console.log("mcp isError envelope throws with provider text:", r5e.threw === true && r5e.msg.includes("pianist_bridge") && r5e.msg.includes("Field required"));
+
+// 5f) MCP 成功信封 {content,isError:false} 是数据不是失败——照常返回不许 throw
+//     （防顺手加固：过括不许把成功面一起拖下水）
+const r5f = await withMockShell(async (_h2, t2) => {
+	return await t2[0].execute("t13", { action: "spoor_status", payload: { project: "portalk" } }, undefined, undefined, {});
+}, { "/tools/invoke": { status: 200, content: [{ type: "text", text: '{"STATUS":"ok"}' }], isError: false } });
+console.log("mcp success envelope returns as data:", r5f?.details?.wired === true && String(r5f?.content?.[0]?.text).includes("STATUS"));
+
 // 6) 洞1：壳在场 + ingest 503 → 丢弃必须出声（warn+计数+session 汇总），且不抛错
 const r6 = await withMockShell(async (h2) => {
 	// 灌 3 条遥测（tool_execution_end→enqueue），攒不到 25 条批量线，靠 settled 兜底冲刷
@@ -153,7 +174,7 @@ let silentOk = false;
 	console.log("silent drop in dismantled state (no warn):", silentOk);
 }
 
-const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats", r5c.threw === true && r5c.msg.includes("pianist_bridge") && r5c.msg.includes("可用"), r5d?.details?.wired === true && String(r5d?.content?.[0]?.text).includes("deferred"), r6 === true, silentOk];
+const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats", r5c.threw === true && r5c.msg.includes("pianist_bridge") && r5c.msg.includes("可用"), r5d?.details?.wired === true && String(r5d?.content?.[0]?.text).includes("deferred"), r5e.threw === true && r5e.msg.includes("pianist_bridge") && r5e.msg.includes("Field required"), r5f?.details?.wired === true && String(r5f?.content?.[0]?.text).includes("STATUS"), r6 === true, silentOk];
 console.log("PASS " + checks.filter(Boolean).length + "/" + checks.length);
 // 门禁硬墙：红必须挡门（此前只 print 不 exit，全红也 exit 0，npm test 的 && 链拦不住）
 process.exit(checks.every(Boolean) ? 0 : 1);
