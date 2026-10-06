@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ApprovalQueue, NotifyRing, WriteQueue, classify } from "./queue-core.mjs";
 import { SandboxManager, SandboxError, serializeError } from "./sandbox.mjs";
+import { isAutoSubmission, validateSkillSubmission } from "./skill-gate.mjs";
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -356,6 +357,17 @@ function writeKey(action) {
  * 返回 { deferred: true, approval } 或原结果。
  */
 async function queuedInvoke(action, args, agentId, intent) {
+	// 自学习闭环 v2 第一铲：grimoire_submit 入库前四道闸（skill-gate，全零 LLM）。
+	// 只对 auto/ 前缀生效——非 auto 名字（retropad 现有形状）零影响，走 red 人眼兜底。
+	// 闸红：不转发山海，直接 422 带逐条人话 reasons（打回不是静默丢弃）。
+	// 闸绿：注入 _gate_pass 标记——classify 双条件（前缀+二次校验）降 amber 通知不阻塞
+	if (action === "grimoire_submit") {
+		const verdict = validateSkillSubmission(args);
+		if (!verdict.ok) {
+			return { status: 422, body: { ok: false, reasons: verdict.reasons } };
+		}
+		if (isAutoSubmission(args)) args = { ...args, _gate_pass: true };
+	}
 	const tier = classify(action, args);
 	if (tier === "red") {
 		if (APPROVAL_MODE === "auto") {

@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isAutoSubmission, validateSkillSubmission } from "./skill-gate.mjs";
 
 // ---------------------------------------------------------------------------
 // 风险分层
@@ -93,6 +94,16 @@ export function classify(action, payload) {
 		if (BASH_RED_RES.some((re) => re.test(cmd))) return "red";
 		if (BASH_AMBER_RES.some((re) => re.test(cmd))) return "amber";
 		return "silent";
+	}
+	// 自学习闭环 v2 第一铲：auto/ 提交过壳侧 skill-gate 四道闸 → 降 amber（通知不阻塞）。
+	// ⚠️ 双条件堵伪造：_gate_pass 只能由壳侧校验通过后注入（shell.mjs queuedInvoke），
+	// 单认 _gate_pass 不作数——classify 内对 payload 重跑 validateSkillSubmission 二次验证
+	// （纯函数无副作用，机械校验零 LLM，代价可忽略）。其余 grimoire_submit 维持 red。
+	if (action === "grimoire_submit"
+		&& isAutoSubmission(payload)
+		&& payload?._gate_pass === true
+		&& validateSkillSubmission(payload).ok) {
+		return "amber";
 	}
 	// 沙箱命令面深判（施工⑤第二铲）：载荷拆出 command 复用 bash 红灰区正则——
 	// session 内 rm -rf / 逃逸尝试 / 云 metadata 仍挂审批（沙箱高危不减视线）；
