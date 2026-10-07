@@ -1,7 +1,7 @@
 // 施工⑦第一铲测试：轻档沙箱引擎（Landlock+Seccomp+netns）——真内核原语、真出网、真记账
 // 验证链（任务书§5逐条）：
 //   1) 引导器可编译；执行器跑 node -e 'ok' 出 ok
-//   2) Landlock 挡 /mnt/c（the user Windows 目录物理不可达，ENOENT/EACCES）
+//   2) Landlock 挡工作区外目录（自造 fixture：allowlist 之外造目录放真文件，不硬编码宿主真实路径）
 //   3) Landlock 挡工作区之外的 /root（读 /root/.bashrc EACCES）
 //   4) Landlock 放行 repo 自身读写（施工期自见）+ 暂存区可写
 //   5) Seccomp 拒 mount（EPERM）+ 拒 unshare（顺序证明：自己的 netns 先开完才装过滤器）
@@ -83,18 +83,25 @@ const IPT_BEFORE = iptablesSnapshot();
 	);
 }
 
-// ---- 2) Landlock 挡 /mnt/c ----
+// ---- 2) Landlock 挡工作区外目录（自造 fixture）----
 {
-	const dir = "/mnt/c/Users/winuser";
-	const entries = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-	const file = entries.find((f) => fs.statSync(path.join(dir, f)).isFile());
-	check(`前置：宿主侧能见到 ${dir} 下的真实文件（${file ?? "无"}）`, Boolean(file));
-	if (file) {
+	// 不硬编码宿主真实路径：在 allowlist 之外自造目录放真文件。
+	// 落点选 /var/tmp——/tmp 在 readWrite 清单里造不出拒绝面，/var/tmp 不在任何清单=其余一律拒。
+	const dir = fs.mkdtempSync("/var/tmp/sbx-outside-");
+	try {
+		fs.writeFileSync(path.join(dir, "probe.txt"), "outside-fixture");
+		const file = "probe.txt";
+		check(
+			`前置：宿主侧能见到 ${dir} 下的真实文件（${file}）`,
+			fs.existsSync(path.join(dir, file)),
+		);
 		const r = await sandbox(["cat", path.join(dir, file)]);
 		check(
 			`Landlock：读 ${dir}/${file} 被拒（${(r.stderr.match(/denied|such file/i) ?? ["?"])[0]}）`,
 			r.code !== 0 && /permission denied|no such file/i.test(r.stderr),
 		);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
 	}
 }
 
