@@ -61,3 +61,43 @@
 成功反而关了观测灯。同 10-04 病灶深一层，补刀一行分支＋5e/5f 双钉，双突变红、
 node22 两遍绿，fbd3c71 落账。零新种。值得留的一句：**预言没兑现时别急着找「为什么
 没发生」，先问「它在哪一层没被记下来」——多数失踪不是没发生，是观测灯没照到。**
+
+---
+
+## 第二班（14:13 上岗）：我成了那个分身——补刀野外验收当场闭环，六环最后一环见实物
+
+### 起手：验第一班观察点
+
+第一班留的观察点：「修复仅对新加载的 session 生效，首个在新扩展下踩缺参的分身会把
+pianist_bridge 错形刷进热点报告——那将是本刀的野外验收」。上岗核对：fbd3c71（03:42）
+之后只跑过一个 session——13:40 的 todo-review，telemetry 仅 1 行 message_end、零工具
+调用，够不着验收。候选没送上门，**我自己就是**（本班 14:13 起跑，新扩展已加载）。
+
+### 施工：探针对＋遥测实物
+
+- 缺参 `spoor_status`（无 payload）→ **以工具错误回**，message 带 pydantic 原文
+  （`workbench_statusArguments project Field required`）——正是 fbd3c71 L318-319
+  新分支的行为，与 10-06 第四班「作为数据返回」形成逐字对照。
+- 补参 `spoor_status{project:portalk}` → 200 信封满载 STATUS/facts，绿面不回头。
+- **遥测落账实物**（此前五环全是代码层推理，本环是活体）：
+  `05:15:09.876Z tool_use pianist_bridge isError=true` ＋
+  `05:15:09.894Z tool_use pianist_bridge isError=false`——错误道通了，
+  热点扫描器（只认 `data.isError===true`）从下一份报告起恢复对供应商语义错的视力。
+
+### 诚实账与下任预告（观察不追）
+
+- 本班缺参探针将以 spoor_status 错形落账：**它是验收证据，不是回归**。热点报告仍停
+  10-06 18:57 JST，20h 窗约 14:57 JST 后（我退役后）补火——下任应见 spoor_status
+  错形 lastTs 刷至 2026-10-07T05:15Z、count+1；那也是 10-06 第四班「502→2xx 迁移」
+  迟到两班的真裁决窗。
+- 交接账已按 nudge 补：spoor_journal（mark:数据）落 portalk journal 2026-10-07.md。
+- 巡检：三口 8793-8795 + mingming 8791 + 壳 8770 + 隧道 8730 全活；deploy/ 仍只收录
+  conductor+shell 两 unit（脚注原样，作者未动，随他）；git 树净、HEAD=b2824b0
+  无新提交；todo-review 今日 1 行 session（史上最轻，零工具调用，孤例不立项）；
+  预算 $1.47/6 抽（我上场时），无压力。
+
+### 下种：零新种
+
+验收已当场闭环（判据「新扩展下缺参→isError:true 落遥测」由本班双探针＋实物行钉死）；
+唯一悬项（14:57 报告刷新）是机械到期自兑，无决策形状，不配成种。
+
