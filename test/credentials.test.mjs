@@ -1,5 +1,7 @@
 // T11 凭证卫生端到端测试：钥匙柜 CRUD、broker 全代发（mock HTTP）、env 注入、入口码掉正反例、
 // OTP 不落存储、审批三档（stub decider）、记账过 scanText 闸。全程 tmp 夹具 + 本地 mock server，不碰外网。
+// T16（v2）：sidecar 来历（hui三问/status）、write 强制来历、墓碑闭环+同名复活、meta 补登、use 事件 context 落账；
+// 阴性对照：v1 老钥匙（无 sidecar）来历缺失不炸、不带 context 的 use 事件无该字段。
 // 纪律：任何 check 名与输出不含夹具值本体（断言只出布尔）。
 import fs from "node:fs";
 import path from "node:path";
@@ -64,10 +66,10 @@ function run(args, { input = "" } = {}) {
 // 1) store：CRUD、stdin 写入、list 不含值、destroy 后指纹失效
 // ---------------------------------------------------------------------------
 {
-	const r = await run(["credentials/store.mjs", "write", "alpha"], { input: `${V_ALPHA}\n` });
+	const r = await run(["credentials/store.mjs", "write", "alpha", "--owner", "test", "--purpose", "测试钥匙"], { input: `${V_ALPHA}\n` });
 	check2("store CLI stdin 写入成功（去尾换行）", r.code === 0 && /指纹 [0-9a-f]{8}/.test(r.out));
 	check2("store 写入后指纹=sha256 前 8 hex", (await run(["credentials/store.mjs", "fingerprint", "alpha"])).out.trim() === createHash("sha256").update(V_ALPHA).digest("hex").slice(0, 8));
-	store.write("beta", V_BETA);
+	store.write("beta", V_BETA, { owner: "test", purpose: "测试钥匙" });
 	check2("store API write/has", store.has("beta") === true);
 	check2("store readValue 等值往返", store.readValue("beta") === V_BETA);
 	const names = store.list();
@@ -82,7 +84,7 @@ function run(args, { input = "" } = {}) {
 	check2("destroy 成功", d.code === 0 && store.has("beta") === false);
 	const fp = await run(["credentials/store.mjs", "fingerprint", "beta"]);
 	check2("destroy 后指纹失效（出声退出非零）", fp.code !== 0);
-	const junk = await run(["credentials/store.mjs", "write", "../evil"]);
+	const junk = await run(["credentials/store.mjs", "write", "../evil", "--owner", "t", "--purpose", "t"]);
 	check2("钥匙名路径注入被拒（出声）", junk.code !== 0);
 }
 
@@ -164,7 +166,7 @@ function run(args, { input = "" } = {}) {
 // 5) journal：事件落账且过 scanText（先造一把值=文本里出现的串，验证落账被替换）
 // ---------------------------------------------------------------------------
 {
-	store.write("scan-gate-key", V_GATE);
+	store.write("scan-gate-key", V_GATE, { owner: "test", purpose: "测试钥匙" });
 	journal("write", { name: "other-key", note: `备注里意外带出 ${V_GATE} 看闸灵不灵` });
 	const lines = fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 	const withNote = lines.find((l) => l.name === "other-key" && l.note);
@@ -191,7 +193,7 @@ function run(args, { input = "" } = {}) {
 	});
 	await new Promise((r) => server.listen(0, "127.0.0.1", r));
 	const port = server.address().port;
-	await run(["credentials/store.mjs", "write", "broker-key"], { input: V_BROKER });
+	await run(["credentials/store.mjs", "write", "broker-key", "--owner", "test", "--purpose", "测试钥匙"], { input: V_BROKER });
 	const r = await run([
 		"credentials/broker.mjs",
 		"--name", "broker-key",
@@ -216,7 +218,7 @@ function run(args, { input = "" } = {}) {
 // 7) inject：子进程 env 可见（只回 true/false）、wrapper 零值日志、退出码透传
 // ---------------------------------------------------------------------------
 {
-	await run(["credentials/store.mjs", "write", "inject-key"], { input: V_INJECT });
+	await run(["credentials/store.mjs", "write", "inject-key", "--owner", "test", "--purpose", "测试钥匙"], { input: V_INJECT });
 	const r = await run([
 		"credentials/inject.mjs",
 		"--env", "MYTOK=inject-key",
@@ -251,7 +253,7 @@ function run(args, { input = "" } = {}) {
 	const mod = `${repoRoot}/credentials/env-source.mjs`;
 
 	// 8a) 柜有：值走柜（use-vault 落账），env 里的旧明文被无视
-	await run(["credentials/store.mjs", "write", "vault-key"], { input: `${V_VAULT}\n` });
+	await run(["credentials/store.mjs", "write", "vault-key", "--owner", "test", "--purpose", "测试钥匙"], { input: `${V_VAULT}\n` });
 	const r = await runNode(
 		`import("${mod}").then(m => process.stdout.write(JSON.stringify({ v: m.envOrVault("X_TEST_KEY", "vault-key") === ${JSON.stringify(V_VAULT)} })))`,
 		{ X_TEST_KEY: "ambient-old-plaintext" },
@@ -276,6 +278,111 @@ function run(args, { input = "" } = {}) {
 	const jtext = fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8");
 	check2("envOrVault: use-vault 事件落账（只有名字）", jtext.includes('"action":"use-vault"') && jtext.includes('"name":"vault-key"') && !jtext.includes(V_VAULT));
 	check2("envOrVault: env-fallback 事件落账（存量清单面）", jtext.includes('"action":"env-fallback"') && jtext.includes('"name":"no-such-key"'));
+}
+
+// ---------------------------------------------------------------------------
+// 9) v2（T16）：sidecar 来历（hui三问）、write 强制来历、mask 自动豁免、墓碑闭环、meta 补登、context 落账
+//    阴性对照是灵魂：无 sidecar 老钥匙「来历缺失」对照出 v1 答不了；无 context 事件对照出不落空串
+// ---------------------------------------------------------------------------
+{
+	// 9a) hui三问：完整 sidecar 的钥匙，status 一条命令答 谁的/为什么存/scope截至/验证来源+时间
+	const r9a = await run([
+		"credentials/store.mjs", "write", "huida",
+		"--owner", "pianist", "--purpose", "hui考古测试钥匙",
+		"--scope", "repo-a,repo-b", "--scope-at", "2026-10-07T00:00:00Z",
+		"--verified", "tested", "--verified-at", "2026-10-07T01:02:03Z",
+	], { input: "value-huida-77aa88bb\n" });
+	check2("v2 write：带全量来历写入成功", r9a.code === 0 && store.has("huida"));
+	const st = await run(["credentials/store.mjs", "status"]);
+	check2("status 三问：谁的/为什么存（owner+purpose）", st.out.includes("huida") && st.out.includes("pianist") && st.out.includes("hui考古测试钥匙"));
+	check2("status 三问：管哪些仓截至何时（scope+快照时刻）", st.out.includes("repo-a") && st.out.includes("repo-b") && st.out.includes("2026-10-07T00:00:00Z"));
+	check2("status 三问：验证来源+时间（tested）", st.out.includes("tested") && st.out.includes("2026-10-07T01:02:03Z"));
+
+	// 9b) 阴性对照：v1 老钥匙（裸文件无 sidecar）——来历缺失、不炸、stderr 提醒补登（v1 答不了，v2 出声）
+	fs.writeFileSync(path.join(process.env.PORTALK_CRED_DIR, "legacy-key"), "legacy-value-1122334455", { mode: 0o600 });
+	check2("老钥匙兼容：has/readValue/list 照旧", store.has("legacy-key") && store.readValue("legacy-key") === "legacy-value-1122334455" && store.list().includes("legacy-key"));
+	const st2 = await run(["credentials/store.mjs", "status"]);
+	check2("老钥匙 status：显示来历缺失且不炸（阴性对照）", st2.code === 0 && st2.out.includes("legacy-key") && st2.out.includes("来历缺失") && !st2.out.includes("legacy-value"));
+	check2("老钥匙 status：stderr 出声提醒补登", st2.err.includes("legacy-key") && st2.err.includes("补登"));
+	const stj = await run(["credentials/store.mjs", "status", "--json"]);
+	const jd = JSON.parse(stj.out);
+	const jhuida = jd.keys.find((k) => k.name === "huida");
+	const jlegacy = jd.keys.find((k) => k.name === "legacy-key");
+	check2(
+		"status --json：机器读字段齐（owner/scope/snapshot/last_verified）",
+		jhuida && jhuida.meta === true && jhuida.owner === "pianist" && Array.isArray(jhuida.scope) && jhuida.scope.join(",") === "repo-a,repo-b" && jhuida.scope_snapshot_at === "2026-10-07T00:00:00Z" && jhuida.last_verified.source === "tested" && jhuida.last_verified.at === "2026-10-07T01:02:03Z",
+	);
+	check2("status --json：老钥匙 meta:false 不炸", jlegacy && jlegacy.meta === false);
+
+	// 9c) write 强制来历闸：CLI 缺 owner/purpose exit 2 出声；API 缺 meta 抛错且不落库（强制闸不是建议）
+	const noOwner = await run(["credentials/store.mjs", "write", "no-owner", "--purpose", "x"], { input: "vvvv-1111\n" });
+	check2("write CLI 缺 owner 拒绝（exit 2 出声）", noOwner.code === 2 && noOwner.err.includes("owner"));
+	const noPurpose = await run(["credentials/store.mjs", "write", "no-purpose", "--owner", "x"], { input: "vvvv-2222\n" });
+	check2("write CLI 缺 purpose 拒绝（exit 2 出声）", noPurpose.code === 2 && noPurpose.err.includes("purpose"));
+	let threw = false;
+	try { store.write("no-meta", "vvvv-3333"); } catch { threw = true; }
+	check2("write API 缺来历抛错且不落库（强制闸）", threw && !store.has("no-meta"));
+	const badVer = await run(["credentials/store.mjs", "write", "bad-ver", "--owner", "x", "--purpose", "y", "--verified", "maybe"], { input: "vvvv-4444\n" });
+	check2("write CLI --verified 非二值拒绝（不许混称）", badVer.code === 2 && badVer.err.includes("declared"));
+
+	// 9d) mask 自动落库豁免：unnamed-* 自带 owner=auto-mask，status 可见
+	const { found: mf } = maskText("网关密码是 mauto-77ff889900aa 请收好");
+	const st3 = await run(["credentials/store.mjs", "status"]);
+	check2("mask 落库 unnamed-* 自动带 owner=auto-mask（status 可见）", mf.length === 1 && /^unnamed-[0-9a-f]{8}$/.test(mf[0].name) && st3.out.includes("auto-mask"));
+
+	// 9e) 墓碑闭环：destroy → 无此钥 + 墓碑（指纹+死因+时间）+ journal 照旧；同名复活清墓碑
+	const dk = await run(["credentials/store.mjs", "destroy", "huida", "--reason", "考古测试完毕"]);
+	const tombP = path.join(process.env.PORTALK_CRED_DIR, "meta", "huida.tombstone.json");
+	const tomb = JSON.parse(fs.readFileSync(tombP, "utf8"));
+	check2("墓碑：柜内无此钥", dk.code === 0 && store.has("huida") === false);
+	check2("墓碑：文件在场含 name+指纹+死因+时间", tomb.name === "huida" && /^[0-9a-f]{8}$/.test(tomb.fingerprint) && tomb.reason === "考古测试完毕" && !Number.isNaN(Date.parse(tomb.ts)));
+	check2("墓碑：指纹=销毁时刻值的 sha256 前 8", tomb.fingerprint === createHash("sha256").update("value-huida-77aa88bb").digest("hex").slice(0, 8));
+	check2("墓碑：journal destroy 照旧落账", fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8").includes('"action":"destroy"'));
+	const sts = await run(["credentials/store.mjs", "status"]);
+	check2("status：墓碑区单独一段（死因+指纹可见）", sts.out.includes("墓碑") && sts.out.includes("考古测试完毕") && sts.out.includes(tomb.fingerprint));
+	const revive = await run(["credentials/store.mjs", "write", "huida", "--owner", "pianist", "--purpose", "复活测试"], { input: "value-huida-2-99bb00cc\n" });
+	check2("同名复活：write 成功 + 墓碑消失", revive.code === 0 && store.has("huida") === true && !fs.existsSync(tombP));
+
+	// 9f) meta 子命令：merge 语义（传啥改啥，不传保留）——老钥匙补登用
+	const mUpd = await run(["credentials/store.mjs", "meta", "huida", "--scope", "repo-c", "--verified", "declared"]);
+	const mAfter = store.readMeta("huida");
+	check2("meta 子命令：传的字段改了（scope 刷新+快照时刻自动到写时刻）", mUpd.code === 0 && Array.isArray(mAfter.scope) && mAfter.scope.join(",") === "repo-c" && mAfter.scope_snapshot_at !== "2026-10-07T00:00:00Z");
+	check2("meta 子命令：不传的字段保留（owner/purpose 不动）", mAfter.owner === "pianist" && mAfter.purpose === "复活测试");
+	check2("meta 子命令：verified 覆盖带来源与时间", mAfter.last_verified.source === "declared" && !Number.isNaN(Date.parse(mAfter.last_verified.at)));
+	const mOld = await run(["credentials/store.mjs", "meta", "legacy-key", "--owner", "pianist", "--purpose", "考古补登 v1 遗留钥匙"]);
+	check2("meta 子命令：老钥匙补登（来历缺失→有档）", mOld.code === 0 && store.readMeta("legacy-key").owner === "pianist");
+	check2("meta 子命令：落 meta 事件（考古可查谁补的档）", fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8").includes('"action":"meta"'));
+
+	// 9g) context 落账：带 context 的 use 事件有该字段；不带没有（两边都断言，不许空串/undefined 混账）
+	const mod = `${repoRoot}/credentials/env-source.mjs`;
+	const runNode9 = (code) =>
+		new Promise((resolve) => {
+			const cp = spawn("node", ["-e", code], { cwd: repoRoot, env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"] });
+			cp.on("close", (c) => resolve({ code: c }));
+		});
+	await runNode9(`import("${mod}").then(m => m.envOrVault("X_CTX", "legacy-key", "conductor:test(ctx)"))`);
+	const injT = await run(["credentials/inject.mjs", "--env", "MYTOK=inject-key", "--task", "test:inject-task", "--", "node", "-e", "process.exit(0)"]);
+	check2("inject --task：exit 0", injT.code === 0);
+	{ // broker --task：起简版 mock（环回需 --allow-private，同 section 6 夹具纪律）
+		const srv = http.createServer((req, res) => res.end("{}"));
+		await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+		const br = await run([
+			"credentials/broker.mjs", "--name", "broker-key", "--url", `http://127.0.0.1:${srv.address().port}/x`,
+			"--header", "Authorization: Bearer {VALUE}", "--task", "test:broker-task", "--allow-private",
+		]);
+		check2("broker --task：exit 0", br.code === 0);
+		srv.close();
+	}
+	const raw9 = fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8");
+	const lines9 = raw9.trim().split("\n").map((l) => JSON.parse(l));
+	const ctxVault = lines9.find((l) => l.action === "use-vault" && l.context === "conductor:test(ctx)");
+	const ctxInj = lines9.find((l) => l.action === "use-inject" && l.context === "test:inject-task");
+	const ctxBrk = lines9.find((l) => l.action === "use-broker" && l.context === "test:broker-task");
+	check2("context 落账：use-vault 带 context（envOrVault 第三参）", Boolean(ctxVault) && ctxVault.name === "legacy-key");
+	check2("context 落账：use-inject 带 context（inject --task）", Boolean(ctxInj) && ctxInj.name === "inject-key");
+	check2("context 落账：use-broker 带 context（broker --task）", Boolean(ctxBrk) && ctxBrk.name === "broker-key");
+	const noCtx = lines9.filter((l) => (l.action === "use-vault" || l.action === "use-inject" || l.action === "use-broker") && !("context" in l));
+	check2("context 阴性对照：不带 context 的 use 事件无该字段（无空串/undefined 混账）", noCtx.length >= 3 && !raw9.includes('"context":undefined') && !raw9.includes('"context":""'));
 }
 
 // ---------------------------------------------------------------------------

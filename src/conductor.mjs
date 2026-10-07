@@ -540,7 +540,8 @@ function launchPart(part, onSpawn) {
 			NO_COLOR: "1",
 			// 钥匙柜供给（T15 活一）：柜有 coding-plan 走柜（落 use-vault 事件）；柜无回落本进程
 			// env（过渡态——/etc/pianist/conductor.env 明文是残留面，下线路线见 docs/t15-env-offline.md）。
-			ZAI_CODING_CN_API_KEY: envOrVault("ZAI_CODING_CN_API_KEY", "coding-plan"),
+			// context（T16）：journal 记「用在哪」——哪个 part 在消费这把钥匙。
+			ZAI_CODING_CN_API_KEY: envOrVault("ZAI_CODING_CN_API_KEY", "coding-plan", `conductor:launch(${part.id})`),
 		};
 		// CONDUCTOR_PI_BIN：测试/演练时可换 stub（真拉起走默认 pi）
 		const piBin = process.env.CONDUCTOR_PI_BIN ?? "./node_modules/.bin/pi";

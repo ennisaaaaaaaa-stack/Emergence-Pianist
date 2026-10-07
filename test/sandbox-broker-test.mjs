@@ -45,7 +45,7 @@ fs.writeFileSync(
 	process.env.PORTALK_CRED_TIERS,
 	JSON.stringify({ standing: ["sbx-key", "ghost-key"], task: [], "per-use": [] }),
 );
-store.write("sbx-key", V_SBX); // ghost-key 在 tiers 不在柜：专测「柜无此钥匙」错误路径
+store.write("sbx-key", V_SBX, { owner: "test", purpose: "沙箱 broker 测试钥匙" }); // ghost-key 在 tiers 不在柜：专测「柜无此钥匙」错误路径
 
 const credJournalText = () => fs.readFileSync(process.env.PORTALK_CRED_JOURNAL, "utf8");
 

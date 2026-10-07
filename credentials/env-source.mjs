@@ -15,11 +15,12 @@ import { journal } from "./journal.mjs";
  * 供给一个 env 变量：钥匙柜优先，env 过渡回落。
  * @param {string} varName env 变量名（报错/记账引用）
  * @param {string} keyName 钥匙柜里的钥匙名
+ * @param {string} [context] 用在哪（journal 语境透传，约定 <调用方>:<语境>，如 conductor:launch(wander)；缺省不落账）
  * @returns {string|undefined} 值（双无时 undefined）
  */
-export function envOrVault(varName, keyName) {
+export function envOrVault(varName, keyName, context) {
 	if (has(keyName)) {
-		journal("use-vault", { name: keyName, var: varName });
+		journal("use-vault", { name: keyName, var: varName, context }); // context 空/缺省由 journal 卫兵剔掉
 		return readValue(keyName);
 	}
 	const fromEnv = process.env[varName];
@@ -27,7 +28,7 @@ export function envOrVault(varName, keyName) {
 		console.warn(
 			`[credentials] 过渡回落：${varName} 走进程 env 明文（钥匙柜里没有 ${keyName}）——env 过渡态待下线，见 docs/t15-env-offline.md`,
 		);
-		journal("env-fallback", { name: keyName, var: varName });
+		journal("env-fallback", { name: keyName, var: varName, context });
 	}
 	return fromEnv;
 }

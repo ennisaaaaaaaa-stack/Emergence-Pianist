@@ -152,7 +152,8 @@ const env = {
 	PIANIST_SHELL_URL: SHELL_URL,
 	NO_COLOR: "1",
 	// 钥匙柜供给（T15 活一）：同 conductor launchPart——柜优先，env 过渡回落，双无 undefined。
-	ZAI_CODING_CN_API_KEY: envOrVault("ZAI_CODING_CN_API_KEY", "coding-plan"),
+	// context（T16）：journal 记「用在哪」——复盘分身拉起时消费这把钥匙。
+	ZAI_CODING_CN_API_KEY: envOrVault("ZAI_CODING_CN_API_KEY", "coding-plan", "retropad:launch(复盘分身)"),
 };
 // 分身不采集遥测（否则扫描器会看见复盘分身自己的循环）
 env.PIANIST_TELEMETRY = "off";

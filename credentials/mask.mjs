@@ -136,7 +136,9 @@ export function maskText(text) {
 			continue;
 		}
 		const name = f.name || `unnamed-${fingerprintValue(f.value)}`;
-		if (!has(name) || readValue(name) !== f.value) storeWrite(name, f.value); // 值经 write() 落钥匙柜
+		// 值经 write() 落钥匙柜；来历=v2 强制闸的自动豁免形状：自动落库自带 owner（否则 write 抛错，mask 不能炸入口）
+		if (!has(name) || readValue(name) !== f.value)
+			storeWrite(name, f.value, { owner: "auto-mask", purpose: "mask 入口码掉自动落库（形状+语境半边命中，码值不码义）" });
 		found.push({ placeholder: ph, name, otp: false });
 	}
 	return { masked, found };

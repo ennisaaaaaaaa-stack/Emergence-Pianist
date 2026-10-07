@@ -11,6 +11,12 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 
+// T16 凭证记账隔离（10/7 复验补钉）：spawn conductor 的测试若不隔离 PORTALK_CRED_*，
+// envOrVault 会写真柜/真账本（conductor:launch 假事件混进审计流）。方子同 credentials.test（10/5 密封纪律）。
+const __credTmp = fs.mkdtempSync(path.join(os.tmpdir(), "pianist-cred-seal-"));
+process.env.PORTALK_CRED_DIR = path.join(__credTmp, "cred");
+process.env.PORTALK_CRED_JOURNAL = path.join(__credTmp, "journal.jsonl");
+
 const CWD = path.resolve(import.meta.dirname, "..");
 const CONDUCTOR = path.join(CWD, "src", "conductor.mjs");
 let pass = 0, total = 0;

@@ -52,6 +52,7 @@ const PRIVATE_TARGET_CIDRS = [
  * @param {string} [o.journalAction] 记账 action（CLI=use-broker，沙箱=use-sandbox-broker）
  * @param {string} [o.agent] 记账工牌（沙箱路径传 policy.identity.agent）
  * @param {string} [o.intentPrefix] 授权 intent 前缀（审计语义用）
+ * @param {string} [o.task] use 记账语境（T16：用在哪，约定 <调用方>:<语境>；缺省不落账）
  * @returns {Promise<{ok:true, body:string, tier:string}|{ok:false, status:number, exitCode:number, error:string}>}
  *   body/error 均已过 scanText；status 是给 gate 端点的 HTTP 状态，exitCode 是给 CLI 的退出码。
  *   永不 reject（内部异常一律转 ok:false 人话错误）——gate 进程不容许被钥匙柜异常炸掉。
@@ -74,6 +75,7 @@ async function brokerCoreInner({
 	journalAction = "use-broker",
 	agent = null,
 	intentPrefix = "broker",
+	task,
 } = {}) {
 	const fail = (status, exitCode, error) => ({ ok: false, status, exitCode, error: scanText(error) });
 
@@ -134,8 +136,8 @@ async function brokerCoreInner({
 	args.push("-H", `@${tmpFile("header", hdrs.map((h) => h.replaceAll("{VALUE}", value)).join("\n"))}`);
 	if (body !== undefined) args.push("--data-binary", `@${tmpFile("body", body.replaceAll("{VALUE}", value))}`);
 
-	// ⑥ 记账（只有名字没有值；沙箱路径 agent=沙箱工牌，由调用方传入）
-	journal(journalAction, { name, tier: verdict.tier, method, host: u.host, ...(agent ? { agent } : {}) });
+	// ⑥ 记账（只有名字没有值；沙箱路径 agent=沙箱工牌，由调用方传入；task=use 语境透传，缺省由 journal 卫兵剔掉）
+	journal(journalAction, { name, tier: verdict.tier, method, host: u.host, ...(agent ? { agent } : {}), context: task });
 
 	// ⑦ 发送：curl 天然吃 env 代理；环回目标不该被外层代理劫走 → 确保 no_proxy 覆盖环回
 	let out = "",
@@ -178,7 +180,8 @@ if (isCli) {
 		url = null,
 		method = "POST",
 		body,
-		allowPrivate = false;
+		allowPrivate = false,
+		task;
 	const headers = [];
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--name") name = argv[++i];
@@ -187,6 +190,7 @@ if (isCli) {
 		else if (argv[i] === "--header") headers.push(argv[++i]);
 		else if (argv[i] === "--body") body = argv[++i];
 		else if (argv[i] === "--allow-private") allowPrivate = true;
+		else if (argv[i] === "--task") task = argv[++i];
 		else {
 			console.error(`broker: 未知参数 ${argv[i]}`);
 			process.exit(2);
@@ -194,12 +198,12 @@ if (isCli) {
 	}
 	if (!name || !url || headers.length === 0) {
 		console.error(
-			"用法: node credentials/broker.mjs --name <钥匙名> --url <URL> [--method POST] [--header 'Authorization: Bearer {VALUE}'] [--body <str>] [--allow-private]",
+			"用法: node credentials/broker.mjs --name <钥匙名> --url <URL> [--method POST] [--header 'Authorization: Bearer {VALUE}'] [--body <str>] [--task <语境>] [--allow-private]",
 		);
 		process.exit(2);
 	}
 
-	const r = await brokerCore({ name, url, method, headers, body, allowPrivate });
+	const r = await brokerCore({ name, url, method, headers, body, allowPrivate, task });
 	if (!r.ok) {
 		console.error(r.error);
 		process.exit(r.exitCode);
