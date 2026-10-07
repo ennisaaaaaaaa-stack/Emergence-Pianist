@@ -5,6 +5,12 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 
+// T16 凭证记账隔离·二轮（10/7 复验补钉）：spawn conductor/retropad 真身的测试不隔离 PORTALK_CRED_*，
+// envOrVault 会写真柜/真账本（conductor:launch/retropad:launch 假事件混进审计流）。方子同 credentials.test。
+const __credTmp = fs.mkdtempSync(path.join(os.tmpdir(), "pianist-cred-seal-"));
+process.env.PORTALK_CRED_DIR = path.join(__credTmp, "cred");
+process.env.PORTALK_CRED_JOURNAL = path.join(__credTmp, "journal.jsonl");
+
 const CWD = path.resolve(import.meta.dirname, "..");
 let pass = 0, total = 0;
 function check(name, ok, extra) { total++; if (ok) pass++; console.log(`${ok ? "PASS" : "FAIL"} ${name}${extra ? " — " + extra : ""}`); }
