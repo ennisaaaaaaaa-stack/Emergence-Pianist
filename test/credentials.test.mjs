@@ -1,6 +1,6 @@
 // T11 凭证卫生端到端测试：钥匙柜 CRUD、broker 全代发（mock HTTP）、env 注入、入口码掉正反例、
 // OTP 不落存储、审批三档（stub decider）、记账过 scanText 闸。全程 tmp 夹具 + 本地 mock server，不碰外网。
-// T16（v2）：sidecar 来历（洄洄三问/status）、write 强制来历、墓碑闭环+同名复活、meta 补登、use 事件 context 落账；
+// T16（v2）：sidecar 来历（hui三问/status）、write 强制来历、墓碑闭环+同名复活、meta 补登、use 事件 context 落账；
 // 阴性对照：v1 老钥匙（无 sidecar）来历缺失不炸、不带 context 的 use 事件无该字段。
 // 纪律：任何 check 名与输出不含夹具值本体（断言只出布尔）。
 import fs from "node:fs";
@@ -281,20 +281,20 @@ function run(args, { input = "" } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 9) v2（T16）：sidecar 来历（洄洄三问）、write 强制来历、mask 自动豁免、墓碑闭环、meta 补登、context 落账
+// 9) v2（T16）：sidecar 来历（hui三问）、write 强制来历、mask 自动豁免、墓碑闭环、meta 补登、context 落账
 //    阴性对照是灵魂：无 sidecar 老钥匙「来历缺失」对照出 v1 答不了；无 context 事件对照出不落空串
 // ---------------------------------------------------------------------------
 {
-	// 9a) 洄洄三问：完整 sidecar 的钥匙，status 一条命令答 谁的/为什么存/scope截至/验证来源+时间
+	// 9a) hui三问：完整 sidecar 的钥匙，status 一条命令答 谁的/为什么存/scope截至/验证来源+时间
 	const r9a = await run([
 		"credentials/store.mjs", "write", "huida",
-		"--owner", "pianist", "--purpose", "洄洄考古测试钥匙",
+		"--owner", "pianist", "--purpose", "hui考古测试钥匙",
 		"--scope", "repo-a,repo-b", "--scope-at", "2026-10-07T00:00:00Z",
 		"--verified", "tested", "--verified-at", "2026-10-07T01:02:03Z",
 	], { input: "value-huida-77aa88bb\n" });
 	check2("v2 write：带全量来历写入成功", r9a.code === 0 && store.has("huida"));
 	const st = await run(["credentials/store.mjs", "status"]);
-	check2("status 三问：谁的/为什么存（owner+purpose）", st.out.includes("huida") && st.out.includes("pianist") && st.out.includes("洄洄考古测试钥匙"));
+	check2("status 三问：谁的/为什么存（owner+purpose）", st.out.includes("huida") && st.out.includes("pianist") && st.out.includes("hui考古测试钥匙"));
 	check2("status 三问：管哪些仓截至何时（scope+快照时刻）", st.out.includes("repo-a") && st.out.includes("repo-b") && st.out.includes("2026-10-07T00:00:00Z"));
 	check2("status 三问：验证来源+时间（tested）", st.out.includes("tested") && st.out.includes("2026-10-07T01:02:03Z"));
 

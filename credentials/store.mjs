@@ -7,7 +7,7 @@
 //   ② 墓碑：destroy 时 meta/<名>.tombstone.json（name/fingerprint/reason/ts）——遗忘的是值，记住的是身份；
 //      同名 write 复活时清掉墓碑。sidecar 与墓碑住 meta/ 子目录（700）而非柜目录同层——
 //      <名>.meta.json 能过 NAME_RE，放同层会污染 list()。
-//   ③ status：一条命令回答洄洄三问（谁的/为什么存/管哪些仓截至何时/上次验证来源+时间）。
+//   ③ status：一条命令回答hui三问（谁的/为什么存/管哪些仓截至何时/上次验证来源+时间）。
 //      无 sidecar 的 v1 老钥匙显示「来历缺失」并 stderr 出声提醒补登；has/read/use/list 全功能照旧。
 // scope 快照纪律：fine-grained PAT 的授权名单是铸造时刻的快照——scope 必须带「截至何时」
 // （scope_snapshot_at）：后来建的门开不了，看时间戳就知道，不用拿真请求去试错。
@@ -215,7 +215,7 @@ export function statusData() {
 	return { dir: credDir(), keys, tombstones: listTombstones() };
 }
 
-/** status 人读：一条命令回答洄洄三问。来历缺失的老钥匙 stderr 出声提醒补登（stdout 照列，不炸）。 */
+/** status 人读：一条命令回答hui三问。来历缺失的老钥匙 stderr 出声提醒补登（stdout 照列，不炸）。 */
 function printStatus() {
 	const d = statusData();
 	const w = Math.max(12, ...d.keys.map((k) => k.name.length), ...d.tombstones.map((t) => String(t.name ?? "").length));
