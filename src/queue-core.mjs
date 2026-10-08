@@ -13,6 +13,7 @@
  * 设计依据：arch-v2 铁律节 / pianist-runtime-dependency-map v4 待办 / the user 9/23 桌面端决策
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isAutoSubmission, validateSkillSubmission } from "./skill-gate.mjs";
@@ -21,30 +22,32 @@ import { isAutoSubmission, validateSkillSubmission } from "./skill-gate.mjs";
 // 风险分层
 // ---------------------------------------------------------------------------
 
-/** bash 红区：不可逆破坏或全盘级操作（数组归一，「或」语义） */
-const BASH_RED_RES = [
-	/\brm\s+-[a-zA-Z]*r/, // 递归删除
-	/\brm\s+-[a-zA-Z]*f\b(?![a-zA-Z]*r)/, // 强删（单独 -f 也算：绕过确认的删除）
-	/\bdd\s+of=/, // 裸写块设备
-	/\bmkfs\b/, // 格式化
-	/:\s*\(\)\s*\{.*\}\s*;\s*:/, // fork bomb
-	/\bchmod\s+-R\s+777\s+\//, // 全盘放开权限
-	/>\s*\/dev\/sd[a-z]/, // 直写磁盘设备
-	/\bgit\s+push\s+--force\b/, // 改写远端历史
-	/\bgit\s+reset\s+--hard\b/, // 丢弃工作区改动
+/** bash 红区：不可逆破坏或全盘级操作（数组归一，「或」语义）。
+ *  形状 {re, name}：name 是规则中文名，供机器行「[红区] 规则名」用（the user 10/7 定案②拍板8）。
+ *  导出 = 单一事实源：分身 extension 侧红区判定 import 这份，不抄第二份正则（定案①拍板4） */
+export const BASH_RED_RES = [
+	{ re: /\brm\s+-[a-zA-Z]*r/, name: "递归删除" },
+	{ re: /\brm\s+-[a-zA-Z]*f\b(?![a-zA-Z]*r)/, name: "强删（绕过确认）" },
+	{ re: /\bdd\s+of=/, name: "裸写块设备" },
+	{ re: /\bmkfs\b/, name: "格式化" },
+	{ re: /:\s*\(\)\s*\{.*\}\s*;\s*:/, name: "fork 炸弹" },
+	{ re: /\bchmod\s+-R\s+777\s+\//, name: "全盘放开权限" },
+	{ re: />\s*\/dev\/sd[a-z]/, name: "直写磁盘设备" },
+	{ re: /\bgit\s+push\s+--force\b/, name: "改写远端历史" },
+	{ re: /\bgit\s+reset\s+--hard\b/, name: "丢弃工作区改动" },
 ];
 
-/** bash 灰区：可逆但影响仓库/系统状态的常见写 */
+/** bash 灰区：可逆但影响仓库/系统状态的常见写（name 同红区——机器行灰区也给规则名） */
 const BASH_AMBER_RES = [
-	/\bgit\s+(push|commit|reset|checkout\s+--|clean|rebase|merge|cherry-pick|revert|stash\s+drop)\b/,
-	/\bnpm\s+(install|i|update|uninstall|ci)\b/,
-	/\b(pip|pip3)\s+install\b/,
-	/\bcurl\b[^\n]*\|\s*(ba)?sh/,
-	/\bwget\b[^\n]*\|\s*(ba)?sh/,
-	/\bsudo\b/,
-	/\bsystemctl\s+(start|stop|restart|disable|enable)\b/,
-	/\b(kill|killall|pkill)\b/,
-	/\b(scp|rsync)\b/,
+	{ re: /\bgit\s+(push|commit|reset|checkout\s+--|clean|rebase|merge|cherry-pick|revert|stash\s+drop)\b/, name: "git 写操作" },
+	{ re: /\bnpm\s+(install|i|update|uninstall|ci)\b/, name: "npm 包写操作" },
+	{ re: /\b(pip|pip3)\s+install\b/, name: "pip 安装" },
+	{ re: /\bcurl\b[^\n]*\|\s*(ba)?sh/, name: "curl 管道执行" },
+	{ re: /\bwget\b[^\n]*\|\s*(ba)?sh/, name: "wget 管道执行" },
+	{ re: /\bsudo\b/, name: "sudo 提权" },
+	{ re: /\bsystemctl\s+(start|stop|restart|disable|enable)\b/, name: "systemctl 服务操作" },
+	{ re: /\b(kill|killall|pkill)\b/, name: "终止进程" },
+	{ re: /\b(scp|rsync)\b/, name: "scp/rsync 远程拷贝" },
 ];
 
 /** 沙箱内红区（施工⑤第二铲）：逃逸尝试 + 云 metadata 探测——零凭证铁律的防线位。
@@ -91,8 +94,8 @@ const ACTION_RISK = {
 export function classify(action, payload) {
 	if (action === "bash") {
 		const cmd = String(payload?.command ?? "");
-		if (BASH_RED_RES.some((re) => re.test(cmd))) return "red";
-		if (BASH_AMBER_RES.some((re) => re.test(cmd))) return "amber";
+		if (BASH_RED_RES.some((r) => r.re.test(cmd))) return "red";
+		if (BASH_AMBER_RES.some((r) => r.re.test(cmd))) return "amber";
 		return "silent";
 	}
 	// 自学习闭环 v2 第一铲：auto/ 提交过壳侧 skill-gate 四道闸 → 降 amber（通知不阻塞）。
@@ -110,8 +113,8 @@ export function classify(action, payload) {
 	// 例外：npm install/curl 等下载在容器内是正常工作流 → 维持 amber 不上浮 red
 	if (action === "sandbox_run_in_session" || action === "sandbox_execute") {
 		const cmd = String(payload?.command ?? "");
-		if (BASH_RED_RES.some((re) => re.test(cmd)) || SANDBOX_RED_RES.some((re) => re.test(cmd))) return "red";
-		if (BASH_AMBER_RES.some((re) => re.test(cmd))) return "amber";
+		if (BASH_RED_RES.some((r) => r.re.test(cmd)) || SANDBOX_RED_RES.some((re) => re.test(cmd))) return "red";
+		if (BASH_AMBER_RES.some((r) => r.re.test(cmd))) return "amber";
 	}
 	return ACTION_RISK[action] ?? "silent";
 }
@@ -232,6 +235,30 @@ export function impactOf(action, payload) {
 }
 
 // ---------------------------------------------------------------------------
+// 审批卡片双行 + 命令指纹（the user 10/7 定案①②：机器行+白话行强制带，壳侧生成，不采信调用方自报）
+// ---------------------------------------------------------------------------
+
+/** commandHash：命令指纹（sha256 前 16 hex）。已批单次放行的匹配键（拍板5）——
+ *  extension 与壳 import 同款函数计算，两侧必然一致 */
+export function commandHash(command) {
+	return crypto.createHash("sha256").update(String(command), "utf8").digest("hex").slice(0, 16);
+}
+
+/** 机器行：`[红区|灰区] 规则名`（拍板8）。bash 逐条规则取名；非 bash 动作用动作名本身当规则名。
+ *  命中不了（白卡）→ 抛错：入队方 fail-fast 回 500，不产裸卡片 */
+export function machineLineOf(action, payload) {
+	if (action === "bash") {
+		const cmd = String(payload?.command ?? "");
+		for (const r of BASH_RED_RES) if (r.re.test(cmd)) return `[红区] ${r.name}`;
+		for (const r of BASH_AMBER_RES) if (r.re.test(cmd)) return `[灰区] ${r.name}`;
+		throw new Error(`machineLine 生成失败：bash 命令命中不了红/灰区规则名（command=${cmd.slice(0, 80)}）`);
+	}
+	const tier = classify(action, payload);
+	if (tier === "red" || tier === "amber") return `[${tier === "red" ? "红区" : "灰区"}] ${action}`;
+	throw new Error(`machineLine 生成失败：action=${action} 不在红/灰区（silent 不进审批）`);
+}
+
+// ---------------------------------------------------------------------------
 // 审批队列（红区挂起等人类；决定权只在 HTTP 侧，bridge 无批准面）
 // ---------------------------------------------------------------------------
 
@@ -244,8 +271,10 @@ export class ApprovalQueue {
 		this.auditFile = auditFile;
 	}
 
-	/** 红区请求入队。返回完整卡片（pending 态） */
-	request(action, payload, agent, intent) {
+	/** 红区请求入队。返回完整卡片（pending 态）。
+	 *  origin="request" = 分身上浮卡（/approvals/request，定案①拍板2/6）——decide 批准后
+	 *  壳不代跑，只置状态待分身重试；机器行生成失败（白卡）在此抛错，调用方 fail-fast 不产裸卡片（拍板8） */
+	request(action, payload, agent, intent, origin = null) {
 		const id = `ap_${Date.now().toString(36)}_${++approvalSeq}`;
 		const item = {
 			id,
@@ -253,8 +282,13 @@ export class ApprovalQueue {
 			agent: agent ?? "unknown",
 			summary: describe(action, payload, intent),
 			impact: impactOf(action, payload),
+			machineLine: machineLineOf(action, payload), // 机器行：classify 结果+命中规则名（壳侧生成）
+			plainLine: describe(action, payload, intent), // 白话行：describe 人话（intent 前置+动作人话）
+			commandHash: action === "bash" ? commandHash(payload?.command) : null, // 已批单次放行匹配键
+			origin,
 			raw: { action, payload: payload ?? null },
 			status: "pending", // pending | executed | denied
+			consumedAt: null, // 已批单次放行被消费的时刻（拍板5：null=未消费，可放行一次）
 			createdAt: new Date().toISOString(),
 			decidedAt: null,
 			decidedBy: null,
@@ -271,6 +305,21 @@ export class ApprovalQueue {
 
 	get(id) {
 		return this.items.get(id) ?? null;
+	}
+
+	/** 已批单次放行（定案①拍板5）：同 commandHash 的已批（executed）未消费卡 → 记
+	 *  consumedAt 返回该卡；找不到返回 null（调用方重新入队——同一命令二次高危仍要走人）。
+	 *  只认 origin="request" 的上浮卡：壳代跑卡（grimoire/沙箱）的批准不背书分身进程重跑。
+	 *  消费也记审计——暗区不许无痕 */
+	consumeApproved(hash, by) {
+		for (const item of this.items.values()) {
+			if (item.origin !== "request" || item.status !== "executed") continue;
+			if (item.commandHash !== hash || item.consumedAt) continue;
+			item.consumedAt = new Date().toISOString();
+			this.audit({ id: item.id, action: item.action, agent: item.agent, consume: true, by: by ?? "relay-retry", ts: item.consumedAt });
+			return item;
+		}
+		return null;
 	}
 
 	/** 人类裁决。approve=true 时由调用方负责执行并回填 result。幂等冲突返回 null。 */

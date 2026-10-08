@@ -13,6 +13,22 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+// 红区判定单一事实源（the user 10/7 定案①拍板4）：从壳的 queue-core import，不抄第二份正则。
+// 壳不在场时本地拦死用的也是同一把尺——两侧永远同尺。queue-core 是纯函数模块，无副作用。
+//
+// ⚠️ 加载位形状（10/8 生产事故修法）：生产加载路径是 ~/.pi/agent/extensions/pianist-tools.ts
+// 符号链接——pi 的 jiti 从【链接路径】解析相对 import，../src/ 落到不存在的
+// /root/.pi/agent/src/，02:12 起全部真 spawn 断（repo 内测试走真身路径，测不出这病）。
+// 正解=realpathSync 解回真身再 createRequire，两条加载路径（链接位/repo 内）都活；
+// 急切加载保持 fail-fast：尺子模块缺失时整个 extension 拒载，审批线永不静默失尺。
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
+
+const requireFromReal = createRequire(realpathSync(fileURLToPath(import.meta.url)));
+const { BASH_RED_RES } = requireFromReal("../src/queue-core.mjs") as {
+	BASH_RED_RES: { re: RegExp; name: string }[];
+};
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -47,23 +63,66 @@ async function shellFetch(path: string, init?: RequestInit): Promise<unknown> {
 // 三件套钩子位
 // ---------------------------------------------------------------------------
 
-/** 审批拦截：tool_call 事件，fail-closed。壳不在场时走本地保守规则。 */
+/** 审批拦截（the user 10/7 定案①）：tool_call 事件，fail-closed。
+ * 上浮形状 = block + 入队 + 已批重试放行（拍板1）——pi 钩子返回面只有
+ * { block, reason, terminate }，不能挂起等人；裁决后不通知分身进程，
+ * 分身看 block reason 自行决定：等已批重试 / 换安全做法 / BLOCKED:环境 报告退出。
+ * 红区判定用 BASH_RED_RES（单一事实源）；灰区不触发上浮（amber 维持现状）。 */
+type RelayOutcome =
+	| { kind: "pass" } // 已批单次放行：这次不拦（单次性由壳侧 consumedAt 钉死）
+	| { kind: "card"; id: string; machineLine: string } // 入队成功：block + 卡片人话
+	| { kind: "degraded"; why: string }; // 壳不在场/上浮失败：降级本地拦死 + 出声
+
+/** 上浮：壳在场（PIANIST_SHELL_URL 设了且 /health 通，拍板4）→ POST /approvals/request。
+ *  机器行+白话行壳侧生成，不信调用方自报；这里只带回卡片 id+机器行进 reason。 */
+async function relayApproval(command: string): Promise<RelayOutcome> {
+	const base = shellUrl();
+	if (!base) return { kind: "degraded", why: "PIANIST_SHELL_URL 未设（壳不在场）" };
+	try {
+		const health = await fetch(`${base}/health`);
+		if (!health.ok) throw new Error(`/health -> HTTP ${health.status}`);
+		const res = await fetch(`${base}/approvals/request`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ agent: AGENT_ID, action: "bash", payload: { command } }),
+		});
+		if (!res.ok) throw new Error(`/approvals/request -> HTTP ${res.status}`);
+		const out = (await res.json()) as { pass?: unknown; approval?: { id?: unknown; machineLine?: unknown } };
+		if (out?.pass === true) return { kind: "pass" }; // 已批同命令：放行这一次
+		const id = out?.approval?.id;
+		const machineLine = out?.approval?.machineLine;
+		if (typeof id === "string" && id && typeof machineLine === "string" && machineLine) {
+			return { kind: "card", id, machineLine };
+		}
+		throw new Error("响应缺卡片 id/machineLine（形状不对按失败处理，fail-closed）");
+	} catch (err) {
+		return { kind: "degraded", why: `上浮失败：${String((err as { message?: unknown })?.message ?? err)}` };
+	}
+}
+
 function wireApproval(pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, _ctx) => {
-		// 人类视线三层里的审批线入口。开发期本地规则：
-		// 高危命令模式直接拦，其余放行。壳在场时改走壳的审批队列。
+		// 人类视线三层里的审批线入口。红区（BASH_RED_RES 单一事实源）上浮壳审批队列；
 		// 真机字段是 input（BashToolInput）；args 兜底兼容测试桩
 		if (event.toolName === "bash") {
 			const raw = (event as { input?: { command?: string }; args?: { command?: string } });
 			const command = String(raw.input?.command ?? raw.args?.command ?? "");
-			const danger =
-				/\brm\s+-rf\b/.test(command) ||
-				/\bgit\s+push\s+--force\b/.test(command) ||
-				/\bgit\s+reset\s+--hard\b/.test(command);
-			if (danger) {
+			if (BASH_RED_RES.some((r) => r.re.test(command))) {
+				const relay = await relayApproval(command);
+				if (relay.kind === "pass") return undefined;
+				if (relay.kind === "card") {
+					return {
+						block: true,
+						reason: `高危命令已上浮审批（卡片 ${relay.id}，机器行 ${relay.machineLine}）。裁决前勿重试同类命令：已批后重试同一命令将放行一次；被拒请换安全做法或输出 BLOCKED:环境 报告`,
+					};
+				}
+				// 壳不在场/上浮失败 → 降级本地拦死 + 出声（上浮失败≠放行，拍板4/纪律）
+				console.warn(
+					`[pianist-approval] 高危命令降级本地拦死（${relay.why}，agent=${AGENT_ID}）：${command.slice(0, 80)}`,
+				);
 				return {
-					block: true,
-					reason: `pianist approval: 高危命令本地规则拦截（${AGENT_ID}）`,
+						block: true,
+						reason: `pianist approval: 高危命令本地拦死（${relay.why}，agent=${AGENT_ID}）——换安全做法，或输出 BLOCKED:环境 报告`,
 				};
 			}
 		}

@@ -21,7 +21,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { ApprovalQueue, NotifyRing, WriteQueue, classify } from "./queue-core.mjs";
+import { ApprovalQueue, NotifyRing, WriteQueue, classify, commandHash } from "./queue-core.mjs";
 import { SandboxManager, SandboxError, serializeError } from "./sandbox.mjs";
 import { isAutoSubmission, validateSkillSubmission } from "./skill-gate.mjs";
 
@@ -476,6 +476,39 @@ const server = http.createServer(async (req, res) => {
 		}
 		return;
 	}
+	if (req.method === "POST" && u.pathname === "/approvals/request") {
+		// 分身审批上浮（the user 10/7 定案①，拍板2）：分身 extension 把红区 bash 送来入队。
+		// 机器行+白话行壳侧生成（classify 结果+规则名 / describe 人话）——不采信调用方自报；
+		// 双行强制非空：生成失败（白卡）fail-fast 回 500，不产裸卡片（拍板8）。
+		// 已批单次放行（拍板5）：同 commandHash 已批未消费 → 记 consumedAt 放行一次
+		// （壳不代跑——分身 bash 的执行环境在分身进程，拍板6）；否则入队新卡片。
+		const chunks = [];
+		for await (const c of req) chunks.push(c);
+		const parsed = safeJsonParse(Buffer.concat(chunks).toString("utf8"));
+		const command = typeof parsed?.payload?.command === "string" ? parsed.payload.command : null;
+		if (parsed?.action !== "bash" || !command) {
+			res.writeHead(400, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: "body 需为 { agent, action: 'bash', payload: { command }, intent? }" }));
+			return;
+		}
+		const consumed = approvals.consumeApproved(commandHash(command), parsed.agent);
+		if (consumed) {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ pass: true, consumedCardId: consumed.id }));
+			return;
+		}
+		try {
+			const item = approvals.request("bash", parsed.payload, parsed.agent, parsed.intent, "request");
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ deferred: true, approval: item }));
+		} catch (err) {
+			// 白卡拒绝：双行生成失败 fail-fast（拍板8）——出声 + 500，不留半成品卡
+			console.warn(`[approval] /approvals/request 白卡拒绝（agent=${parsed.agent ?? "unknown"}）：${String(err?.message ?? err)}`);
+			res.writeHead(500, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: String(err?.message ?? err) }));
+		}
+		return;
+	}
 	if (req.method === "GET" && u.pathname === "/approvals/pending") {
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ pending: approvals.pending() }));
@@ -503,8 +536,17 @@ const server = http.createServer(async (req, res) => {
 			res.end(JSON.stringify({ error: `approval ${parsed.id} 不存在或已裁决` }));
 			return;
 		}
-		// 批准后执行面：壳代跑（写队列），执行结果回填卡片
+		// 批准后执行面：壳代跑（写队列），执行结果回填卡片。
+		// 例外（定案①拍板6）：分身上浮卡（origin=request，分身进程里要跑的 bash）不代跑——
+		// /tools/invoke 的代跑是因为那是壳工具；分身 bash 的执行环境在分身进程，壳代跑语义错。
+		// 只置状态待重试（单次放行由 /approvals/request 的 commandHash 匹配承接）
 		if (parsed.approve) {
+			if (decided.origin === "request") {
+				decided.result = "已批待分身重试（单次放行）";
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify(decided));
+				return;
+			}
 			try {
 				const { action, payload } = decided.raw;
 				const out = await writeQueue.run(writeKey(action), () => invokeTool(action, payload, decided.agent));

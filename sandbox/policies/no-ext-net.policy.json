@@ -1,0 +1,73 @@
+{
+  "_schema": {
+    "_说明": "轻档沙箱策略（自描述）。门禁不是囚室：白名单开箱宽，硬拒的只有真泄密通道，新端点先通后报（落 data/sandbox-journal.jsonl）。本策略是 default 的镜像但 allowDomains 置空——空白名单=全拒（审链临时工禁外网档，诚实降级不是假装断网：出网请求会被门禁代理逐条拒绝并记账，而非网络层消失）。",
+    "name": "策略名（记账 note 引用）",
+    "version": "策略版本号（整数）",
+    "identity": {
+      "agent": "工牌（记账 agent 字段）",
+      "keypair": "钥匙——预留结构位，本铲不实现",
+      "sig": "章位——预留结构位，本铲不实现（第三方 agent 入住时启用）"
+    },
+    "network": {
+      "mode": "网络模式：allowlist-proxy=独立 netns 内只有 lo，出网全走 127.0.0.1:proxyPort 的白名单门禁代理",
+      "proxyPort": "netns 内门禁代理监听端口（landlock 内 lo 上，由 relay 绑定）；与 default(8788) 错开防同跑冲突",
+      "allowDomains": "放行域名（精确或后缀匹配）；空数组=白名单为空=全拒",
+      "hardDeny": {
+        "cidrs": "硬拒网段（IP 字面量与域名解析结果都比对）",
+        "bareIp": "true=硬拒一切裸 IP 直连（不是恶意，是没必要）"
+      }
+    },
+    "filesystem": {
+      "readOnly": "Landlock 只读+可执行清单（读系统）",
+      "readWrite": "Landlock 读写清单（暂存区与工作区；跑测试要写 tmp）",
+      "readWriteFiles": "整体只读目录内单点放行读写的文件（如 /dev/null）",
+      "其余": "一律拒——含 /root（除本清单与执行器显式放行的 node 解释器目录）、/home、/mnt（/mnt/c 物理不可达）、/proc/sys、/sys"
+    },
+    "scratchDirPattern": "暂存目录约定，<pid> 占位符替换为执行器 pid"
+  },
+  "name": "no-ext-net",
+  "version": 1,
+  "identity": {
+    "agent": "pianist",
+    "keypair": null,
+    "sig": null
+  },
+  "network": {
+    "mode": "allowlist-proxy",
+    "proxyPort": 8789,
+    "allowDomains": [],
+    "hardDeny": {
+      "cidrs": [
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fe80::/10",
+        "fc00::/7"
+      ],
+      "bareIp": true
+    }
+  },
+  "filesystem": {
+    "readOnly": [
+      "/usr",
+      "/lib",
+      "/lib64",
+      "/bin",
+      "/sbin",
+      "/etc",
+      "/dev"
+    ],
+    "readWrite": [
+      "/tmp",
+      "REPO_HOME"
+    ],
+    "readWriteFiles": [
+      "/dev/null"
+    ]
+  },
+  "scratchDirPattern": "/tmp/sandbox-scratch-<pid>"
+}
