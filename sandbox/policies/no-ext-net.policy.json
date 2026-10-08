@@ -63,7 +63,7 @@
     ],
     "readWrite": [
       "/tmp",
-      "REPO_HOME"
+      "/root/portalk-runtime"
     ],
     "readWriteFiles": [
       "/dev/null"

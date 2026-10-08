@@ -70,7 +70,7 @@ export function ensureSandboxNode() {
 	return { binDir: path.join(NODE_FARM, "bin"), nodeBin: farmNode };
 }
 
-/** 工作区在 REPO_HOME——nobody 需要穿越 /root（只补 o+x，不授予列举/读取；缺了就补且出声） */
+/** 工作区在 /root/portalk-runtime——nobody 需要穿越 /root（只补 o+x，不授予列举/读取；缺了就补且出声） */
 function ensureRootTraversal() {
 	const st = fs.statSync("/root");
 	if (!(st.mode & 0o001)) {
