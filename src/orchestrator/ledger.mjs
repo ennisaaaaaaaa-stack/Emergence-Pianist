@@ -16,10 +16,10 @@ export class SpawnLedger {
 	}
 
 	/** 登记一个分身上场。重复 id 拒绝（台账按进程记，id 即身份）。 */
-	register({ id, role, sheetId, sandboxTier = null, pointer = null, startedAt = Date.now() }) {
+	register({ id, role, sheetId, sandboxTier = null, pointer = null, startedAt = Date.now(), taskId = null }) {
 		if (this.rows.has(id)) throw new Error(`台账重复 id：${id}`);
 		const row = {
-			id, role, sheetId, sandboxTier, pointer,
+			id, role, sheetId, taskId, sandboxTier, pointer,
 			startedAt, lastHeartbeat: null, lastEventKind: null,
 			cost: 0, status: "跑", reportMode: false, note: null,
 		};

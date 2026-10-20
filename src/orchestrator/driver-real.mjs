@@ -13,7 +13,8 @@
  *      ——T16 context 透传，账本记到任务级粒度（拍板表#3）。
  *   ④ PIANIST_SHELL_URL（缺省 8770）+ no_proxy=127.0.0.1,localhost（壳地址不许走环境代理）。
  *
- * 沙箱映射（拍板表#6）：tier=null 直接 spawn；tier 有值走 runSandboxed 包 pi 命令。
+ * 沙箱映射（拍板表#6）：tier=null 直接 spawn；tier 有值走 runSandboxed 包 pi 命令（captureStdout=true
+ * 回收交货单 stdout——retropad-v0 单：沙箱路径 exit.tail 不再恒空）。
  * 沙箱路径的诚实降级（v0 写明不装）：runSandboxed 不暴露子 pid（detached launcher 整组
  * 收割是执行器内部事），引擎信号打不到沙箱内进程——硬停靠 executor timeoutMs 兜底，
  * isAlive 靠 runSandboxed 结算 Promise；sigterm/sigkill 记 killDegraded 出声，不假装发了信号。
@@ -31,6 +32,7 @@ import { envOrVault } from "../../credentials/env-source.mjs";
 import { runSandboxed as defaultRunSandboxed } from "../../sandbox/executor.mjs";
 import { resolveSandboxTier } from "./sandbox-tiers.mjs";
 import { buildMinionPrompt } from "./prompt-builder.mjs";
+import { emitEvent } from "./emit.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -43,6 +45,7 @@ export class RealDriver {
 	 * @param {string} [opts.model]          模型（conductor 同款缺省）
 	 * @param {string} [opts.shellUrl]       壳地址（缺省 PIANIST_SHELL_URL env → 127.0.0.1:8770）
 	 * @param {string} [opts.progressDir]    遗言/进度目录（缺省 ORCH_PROGRESS_DIR env → /tmp/orch-progress）
+ * @param {string|null} [opts.eventsDir]  存在感事件账目录（F3，缺省 ORCH_EVENTS_DIR env → emit.mjs 的 repo 相对 data/events）
 	 * @param {Function} [opts.runSandboxed] 沙箱执行器（注入位：测试记调用，不真起沙箱）
 	 * @param {Function} [opts.buildPrompt]  prompt 构造器（缺省 buildMinionPrompt + 绑定 sheet 角色）
 	 * @param {object|null} [opts.sheet]     绑定任务书（引擎重试 spawn 的 cfg 不带沙箱列/指针，按角色回查）
@@ -56,6 +59,7 @@ export class RealDriver {
 		model = "zai-coding-cn/glm-5.2",
 		shellUrl = process.env.PIANIST_SHELL_URL ?? "http://127.0.0.1:8770",
 		progressDir = process.env.ORCH_PROGRESS_DIR ?? "/tmp/orch-progress",
+		eventsDir = process.env.ORCH_EVENTS_DIR ?? null,
 		runSandboxed = defaultRunSandboxed,
 		buildPrompt = null,
 		sheet = null,
@@ -69,6 +73,7 @@ export class RealDriver {
 		this.model = model;
 		this.shellUrl = shellUrl;
 		this.progressDir = progressDir;
+		this.emitOpts = eventsDir ? { eventsDir } : {}; // F3 存在感：发车/收车心跳的落账位（旁路，写失败不拦）
 		this.runSandboxed = runSandboxed;
 		this.buildPromptOpt = buildPrompt;
 		this.sheet = sheet;
@@ -146,8 +151,19 @@ export class RealDriver {
 		};
 		this.rows.set(minionId, rec);
 
-		// argv 与 conductor 同款：pi -p --model <model> <TASK>
-		const piArgv = ["-p", "--model", this.model, prompt];
+		// F3 存在感：发车心跳（旁路账——emitEvent 写失败自己吞，不拦发车）
+		emitEvent("dispatch.started", { minionId, taskId, role, tier: rec.tier, sandboxed: rec.sandboxed }, this.emitOpts);
+
+		// 收车收口（四个退场口一处写）：死状入账 → 收车心跳 → onExit 出（emit 不抄四遍，单点收口）
+		const finish = (exit) => {
+			rec.done = true;
+			rec.exit = exit;
+			emitEvent("dispatch.exited", { minionId, taskId, role, code: exit.code, signal: exit.signal }, this.emitOpts);
+			this.onExit?.(minionId, exit);
+		};
+
+		// argv 与 conductor 同款：pi -p --model <model> <TASK>；cfg.model 显式覆盖（角色级，10/16）
+		const piArgv = ["-p", "--model", cfg.model ?? this.model, prompt];
 		if (rec.sandboxed) {
 			// tier 有值 → runSandboxed 包 pi 命令（拍板表#6）；注入位让测试记调用不真起沙箱
 			const sandboxEnv = {
@@ -164,17 +180,15 @@ export class RealDriver {
 					agent: minionId,
 					timeoutMs: this.hardStopMs ?? undefined,
 					env: sandboxEnv,
+					captureStdout: true, // 交货单采集（retropad-v0：沙箱 stdout 原先打进 executor 控制台=编排器视角丢弃）
 				}))
 				.then((res) => {
-					rec.done = true;
-					rec.exit = { code: res?.code ?? null, signal: res?.signal ?? null, tail: "" };
-					this.onExit?.(minionId, rec.exit);
+					// tail 接 executor 截尾（≤8MB），收口到 4000B 尾窗——与直 spawn 路径 slice(-4000) 同语义
+					finish({ code: res?.code ?? null, signal: res?.signal ?? null, tail: (res?.stdoutTail ?? "").slice(-4000) });
 					return rec.exit;
 				})
 				.catch((err) => {
-					rec.done = true;
-					rec.exit = { code: -1, signal: null, tail: `runSandboxed 失败：${err?.message ?? err}` };
-					this.onExit?.(minionId, rec.exit);
+					finish({ code: -1, signal: null, tail: `runSandboxed 失败：${err?.message ?? err}` });
 					return rec.exit;
 				});
 		} else {
@@ -192,16 +206,14 @@ export class RealDriver {
 			// ① pid 到手即入账（死时验尸少一跳）；② 信号死法随 close 带回（conductor 死法注记同款）
 			rec.closed = new Promise((resolve) => {
 				child.on("close", (code, signal) => {
-					rec.done = true;
-					rec.exit = { code, signal: signal ?? null, tail: (out + "\n" + err).slice(-500) };
-					this.onExit?.(minionId, rec.exit);
+					// tail 窗 4000B（v2-2：复盘分身裁决 JSON 从交货单 manifest.tail 取——300/500 字窗装不下带 candidate 正文的裁决，
+					// 尾窗加宽是采集面不是修饰面；讣告/收尾泵的 regex 消费对更长 tail 无感）
+					finish({ code, signal: signal ?? null, tail: (out + "\n" + err).slice(-4000) });
 					resolve(rec.exit);
 				});
 			});
 			child.on("error", (e) => {
-				rec.done = true;
-				rec.exit = { code: -1, signal: null, tail: `spawn error：${e?.message ?? e}` };
-				this.onExit?.(minionId, rec.exit);
+				finish({ code: -1, signal: null, tail: `spawn error：${e?.message ?? e}` });
 			});
 		}
 		this.onSpawn?.(minionId, { ...rec, closed: undefined });

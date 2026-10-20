@@ -250,10 +250,11 @@ async function invoke(action, payload, agent = "skillgate-test") {
 	check("e2e 四闸同红 → 零转发", grimoirePosts.length === before);
 }
 // 闸绿 → 转发发生且 payload 带 _gate_pass（amber 路直走）
+// 钉二分流（2026-10-11）：auto/ 闸绿改道 /skill/auto 闸门口，不再打正式口
 {
 	const before = grimoirePosts.length;
 	const out = await invoke("grimoire_submit", greenPayload());
-	check("e2e 闸绿 → 转发发生（mock 收到 POST /skill）", grimoirePosts.length === before + 1 && grimoirePosts[grimoirePosts.length - 1].path === "/skill");
+	check("e2e 闸绿 → 转发发生（mock 收到 POST /skill/auto）", grimoirePosts.length === before + 1 && grimoirePosts[grimoirePosts.length - 1].path === "/skill/auto");
 	const sent = grimoirePosts.length > before ? JSON.parse(grimoirePosts[grimoirePosts.length - 1].body) : null;
 	check("e2e 闸绿 → 转发 payload 带 _gate_pass: true", sent?._gate_pass === true && sent?.name === "auto/test-skill");
 	check("e2e 闸绿 → 走 amber 直通不挂审批", out?.status === 200 && out.deferred !== true);

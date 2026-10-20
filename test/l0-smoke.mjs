@@ -27,7 +27,7 @@ console.log("T4 skeleton toolCalls:", skel.toolCalls === 3);
 
 // --- 真机测试：L0Spine（无 LLM 调用路径）---
 process.env.PIANIST_AGENT_ID = "pianist-dev-1";
-const spine = new L0Spine({ bridgeTailMessages: 2 });
+const spine = new L0Spine();
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "l0-smoke-")); // 自建自清，不依赖 /tmp 残留
 const file1 = await spine.start(workDir);
 console.log("T5 start creates session:", typeof file1 === "string" && file1.endsWith(".jsonl"));

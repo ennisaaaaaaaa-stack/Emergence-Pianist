@@ -18,6 +18,16 @@ import { brokerCore } from "../credentials/broker.mjs";
 const MAX_HEAD = 64 * 1024; // 代理请求头上限
 const VAULT_HOST = "vault.internal"; // 保留域（不撞真实域名），沙箱内 agent 隔墙喊钥匙的固定名
 const VAULT_MAX_BODY = 1024 * 1024; // /use 请求体上限（模板不该比这更大）
+
+// 基础设施保留域（sandbox-shell-internal 工单，2026-10-19）：沙箱内 agent 要用的本机服务
+// （壳/经图/spoor 三房/tideline 迁移壳）全在宿主 127.0.0.1 上，而 netns hardDeny 拒 127.0.0.0/8
+// ——沙箱分身曾经连自己的基础设施都够不着（retropad 沙箱档切不回去的根因）。修法=端口级纯管道：
+// gate-proxy 为每个基础设施端口开独立 unix socket（gate-<port>.sock），netns-relay 在 lo 上绑同号
+// 端口连过去，墙外纯字节管道转 127.0.0.1:<port>——零 HTTP 解析（协议由两端自己讲）、消费者零改动
+// （fetch 直连 127.0.0.1:8770 形状不变）。端口集合是枚举门（enumerated gate）：不出网、不过 decide，
+// 与 vault.internal 同等保留地位；新端口进集合要过 code review。
+const SHELL_INTERNAL_PORTS = [8730, 8770, 8793, 8794, 8795, 8890]; // 经图隧道/壳/spoor三房/迁移壳
+
 const STATUS_TEXT = {
 	200: "OK",
 	400: "Bad Request",
@@ -117,6 +127,53 @@ function parseHostPort(target, defaultPort) {
 		}
 	}
 	return { host, port };
+}
+
+/**
+ * 基础设施端口管道工厂（sandbox-shell-internal）：为每个基础设施端口开独立 unix socket
+ * （gate-<port>.sock），进来的字节纯管道转墙外 127.0.0.1:<port>。零 HTTP 解析、零记账
+ * （基础设施调用不是外联，不进 sandbox-new-endpoint 账本——与 vault.internal 同等保留地位）。
+ * 由 executor 在起主 gate 的同 scratch 目录一并拉起，netns-relay 侧对应绑同号端口。
+ */
+export function startShellPipes({ scratchDir, ports = SHELL_INTERNAL_PORTS }) {
+	const closers = [];
+	const sockets = [];
+	for (const port of ports) {
+		const socketPath = path.join(scratchDir, `gate-${port}.sock`);
+		const server = net.createServer((sock) => {
+			const up = net.connect(port, "127.0.0.1");
+			sock.on("error", () => up.destroy());
+			up.on("error", () => sock.destroy());
+			sock.pipe(up);
+			up.pipe(sock);
+			sock.on("close", () => up.end());
+			up.on("close", () => sock.end());
+		});
+		server.on("error", () => {}); // 单端口管道失败不掀翻全家（其余端口照常）
+		try {
+			server.listen(socketPath, () => {
+				try {
+					fs.chmodSync(socketPath, 0o666); // 沙箱内 nobody 要能 connect
+				} catch {}
+			});
+		} catch {}
+		closers.push(() => {
+			try {
+				server.close();
+			} catch {}
+			try {
+				fs.unlinkSync(socketPath);
+			} catch {}
+			for (const s of server.clients ?? []) s.destroy();
+		});
+		sockets.push({ port, socketPath });
+	}
+	return {
+		sockets,
+		close() {
+			for (const c of closers) c();
+		},
+	};
 }
 
 /**

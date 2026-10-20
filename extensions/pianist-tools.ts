@@ -29,6 +29,12 @@ const requireFromReal = createRequire(realpathSync(fileURLToPath(import.meta.url
 const { BASH_RED_RES } = requireFromReal("../src/queue-core.mjs") as {
 	BASH_RED_RES: { re: RegExp; name: string }[];
 };
+// 桥 action 目录（retro 工单 pianist-bridge-tool-desc-enumerate-actions 修法，2026-10-15）。
+// 单源 src/bridge-catalog.mjs：目录/必填字段/分层标记一处维护，description 现渲染——
+// 新 session 不再盲猜 API 面（历史上 status×17、spoor_status 缺 project×28 全是盲猜代价）。
+const { bridgeCatalogText } = requireFromReal("../src/bridge-catalog.mjs") as {
+	bridgeCatalogText: () => string;
+};
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -388,11 +394,16 @@ function registerBridgeTools(pi: ExtensionAPI) {
 			};
 		},
 		parameters: Type.Object({
-			action: Type.String({ description: "壳工具动作标识" }),
-			payload: Type.Optional(Type.Object({}, { additionalProperties: true })),
+			action: Type.String({
+				description: "壳工具动作标识。合法名单与必填字段见本工具 description（单源 src/bridge-catalog.mjs，不在参数里猜）",
+			}),
+			payload: Type.Optional(
+				Type.Object({}, { additionalProperties: true, description: "各 action 的必填/可选字段见工具描述目录行" }),
+			),
 		}),
 		description:
-			"Pianist 壳桥工具（开发期直挂占位）。壳在场时转发壳分发的 MCP 工具调用；未接线时返回未接线说明。",
+			"Pianist 壳桥工具（统一入口，开发期直挂形态）。壳在场时转发壳分发的工具调用；未接线时（PIANIST_SHELL_URL 未设）返回未接线说明。\n" +
+			bridgeCatalogText(),
 	});
 }
 

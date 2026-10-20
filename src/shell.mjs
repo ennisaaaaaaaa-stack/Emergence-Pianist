@@ -22,6 +22,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { ApprovalQueue, NotifyRing, WriteQueue, classify, commandHash } from "./queue-core.mjs";
+import { TTL_MODES } from "./inbox-ttl.mjs";
 import { SandboxManager, SandboxError, serializeError } from "./sandbox.mjs";
 import { isAutoSubmission, validateSkillSubmission } from "./skill-gate.mjs";
 
@@ -252,6 +253,9 @@ const TOOL_ROUTES = {
 	grimoire_darkzone: { kind: "grimoire", path: "/darkzone" },
 	grimoire_stats: { kind: "grimoire", path: "/stats" },
 	grimoire_submit: { kind: "grimoire", path: "/skill", method: "POST" },
+	// 自学习 v2 钉二（hui 2026-10-11 落山海）：auto/ 只进闸门口 /skill/auto，
+	// 正式口对 auto/ 前缀 403 圈死——壳侧同款分流，闸绿后自动改道。
+	grimoire_submit_auto: { kind: "grimoire", path: "/skill/auto", method: "POST" },
 	grimoire_event: { kind: "grimoire", path: "/event", method: "POST" },
 
 	// spoor 工作台（workbench，8793）
@@ -366,7 +370,12 @@ async function queuedInvoke(action, args, agentId, intent) {
 		if (!verdict.ok) {
 			return { status: 422, body: { ok: false, reasons: verdict.reasons } };
 		}
-		if (isAutoSubmission(args)) args = { ...args, _gate_pass: true };
+		if (isAutoSubmission(args)) {
+			// 钉二分流：auto/ 闸绿改道闸门口 /skill/auto（正式口对 auto/ 已 403 圈死）。
+			// 四道闸纪律不变，_gate_pass 标记照旧注入（classify 双条件降 amber）。
+			args = { ...args, _gate_pass: true };
+			action = "grimoire_submit_auto";
+		}
 	}
 	const tier = classify(action, args);
 	if (tier === "red") {
@@ -510,6 +519,8 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 	if (req.method === "GET" && u.pathname === "/approvals/pending") {
+		// F2 消费面核对（spec 实现面 3a）：pending() 只透 status==="pending" 的卡——过期自动
+		// deny（by=system-expired）的卡从 pending 面消失，终态走 /approvals/get（卡的下场看得见）。
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ pending: approvals.pending() }));
 		return;
@@ -563,6 +574,30 @@ const server = http.createServer(async (req, res) => {
 		}
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify(decided));
+		return;
+	}
+	if (req.method === "POST" && u.pathname === "/approvals/sweep") {
+		// F2 收件箱按天清（docs/f2-inbox-ttl-spec-v0.2.1.md）：conductor 每天首 tick 打这里——
+		// 过期 pending 审批卡自动转 denied（by=system-expired，decide 同形状同审计，暗区不许无痕）。
+		// body 可带 { mode?: "day"|"24h"|"tiered", now?: ms }：mode 缺省 day（方案 A 正典）；
+		// now 是测试注钟位（生产不传=真钟）——钟屋同源，别拿它当补账通道。清理记账行由调用方落。
+		const chunks = [];
+		for await (const c of req) chunks.push(c);
+		const parsed = safeJsonParse(Buffer.concat(chunks).toString("utf8")) ?? {};
+		const mode = TTL_MODES.includes(parsed.mode) ? parsed.mode : "day";
+		const now = Number.isFinite(Number(parsed.now)) ? Number(parsed.now) : undefined;
+		const swept = approvals.sweepExpired(now, mode);
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ ok: true, mode, swept }));
+		return;
+	}
+	if (req.method === "POST" && u.pathname === "/approvals/backfill-day") {
+		// F2 上线迁移（施工读法 A，spec 实现面 1/验收 7）：存量 pending 卡无 day 的补打 day=部署日
+		//（壳侧真钟 nowJstDay()——部署日不是注入位）。幂等：已有 day 不动。--dry-run 在工具侧
+		//（tools/migrate-inbox-day.mjs 只报不写），本路由只写真跑。时机纪律：真壳迁移由收口人执行。
+		const { day, backfilled } = approvals.backfillDay();
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ ok: true, day, backfilled }));
 		return;
 	}
 	if (req.method === "GET" && u.pathname === "/notify/since") {

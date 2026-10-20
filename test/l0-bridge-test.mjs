@@ -8,7 +8,7 @@ const jiti = createJiti(import.meta.url);
 const { L0Spine } = await jiti.import("../src/l0-spine.ts");
 
 process.env.PIANIST_AGENT_ID = "pianist-dev-1";
-const spine = new L0Spine({ bridgeTailMessages: 2 });
+const spine = new L0Spine();
 
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "l0-bridge-")); // 自建自清，不依赖 /tmp 残留
 const file1 = await spine.start(workDir);

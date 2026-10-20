@@ -22,3 +22,4 @@ export * from "./heartbeat.mjs";
 export * from "./driver-real.mjs";
 export * from "./runtime.mjs";
 export * from "./watchman.mjs";
+export * from "./retro-trigger.mjs";

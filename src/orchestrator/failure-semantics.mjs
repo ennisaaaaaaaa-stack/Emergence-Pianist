@@ -62,7 +62,7 @@ export class OrchestratorEngine {
 
 	/** 分身上场：台账登记 + 监督器上钟。timeout/idle 配置在 supervisor 构造时定（来自任务书预算袋/调用方）。 */
 	start({ taskId, minionId, role, sheetId, startedAt, sandboxTier = null, pointer = null }) {
-		this.ledger.register({ id: minionId, role, sheetId, sandboxTier, pointer, startedAt });
+		this.ledger.register({ id: minionId, role, sheetId, sandboxTier, pointer, startedAt, taskId });
 		this.minionTask.set(minionId, taskId);
 		const task = this._task(taskId);
 		if (!task.minionIds) task.minionIds = [];

@@ -88,3 +88,43 @@ tier=null 直接 spawn；tier 有值走 `runSandboxed` 包 pi 命令（executor 
 6. 报告模式：80%→遗言文件+reportMode=true；不调则皆无；sendReport 幂等；
 7. 零真钱：全部 spawn 入口=stub（真 pi bundle 拉起数=0）；npm test 两遍绿；
 8. orch-v0-test.mjs 断言零改动仍绿（引擎一行没动）。
+
+## 审链（交付前评审，蓝图 §5 定 10/6 · 拍板7 第一铲落地 10/7）
+
+分工钉死：临时工审做机械复验，前台把关做判断层。结构不变式：**复验者≠施工者**（写死
+在编排器，不靠自觉）；施工者自报全绿不算数。
+
+三件已落（第一铲，stub 端到端零真钱）：
+
+| 件 | 落位 | 断言 |
+|---|---|---|
+| 审链任务书模板 | `src/orchestrator/prompt-builder.mjs` 的 `buildReviewPrompt({taskId, revieweeId, subject, evidence, claims})` | orch-real-driver §2：机械核对三件（源可达/结论与引用对得上/测试真跑两遍）+VERDICT:pass/fail 协议+阴性对照纪律（审不动坏东西=绿灯盖章机） |
+| 沙箱档位 | `sandbox-tiers.mjs`：角色含「审」+「临时工」→ no-ext-net（空白名单=全拒） | orch-real-driver §1：审链临时工/审临时工两种短名同落禁外网档；映射表改全 default 断言必红 |
+| 占位符约定 | 不传的字段以 `<占位说明>` 字面量留场 | 占位符没填就派出去=审链空转，调用方负责（advisory，不强制） |
+
+**调用形状**：主 agent 在交货单到手后、commit 前，用 buildReviewPrompt 生成审链任务书
+发车临时工（独立分身，no-ext-net 沙箱），VERDICT:pass 才收口；fail 前文必带红项。
+
+**诚实账（10/12 记）**：模板在膛、实战首单未发——10/7-10/12 的大活（orch82 系/审批
+上浮/v2-2 系/dualcard/style-b）走的都是主 agent 手动复验路线（证据=坑账各行「独立复
+验」节+references/ 现场文件）。主 agent 复验与审链临时工复验语义同构，但「交付前评
+审串进 dispatch 收口判据」的自动化没做——交货单到手不自动拉审链，收口只看 exitCode
+与 tail。**接线缺口**：dispatch 脚本收口位（交货单分支）+ runtime 收尾泵都不调
+buildReviewPrompt；蓝图 §5「casting sheet 显式角色（大活必有）」的角色表也没用过审链
+角色。下一单候选：审链自动串接（交货单→自动发审链分身→VERDICT 门）+ 首发实战。
+
+> **勘误（10/17 t16-fix）**：上段「runtime 收尾泵不调 buildReviewPrompt」已被 **10/16 f8a1c0a
+> 收口**（runtime 收尾泵路径——completionPump 交付分支自动发车审链分身：casting-sheet
+> 审链列 + review-chain 模块 + VERDICT 协议分支）；dispatch 脚本收口位若仍缺另行留账。
+
+**启动归属（the user 10/12 定向）**：审链分身的启动**不落在任务书里**——任务书写明「要有
+审链」=每次人工记得、漏写就裸奔（与「纪律压不住顺手」同族）。两路正解：
+
+1. **pianist 判断层自主**：主 agent 接到交货单、评估活的大小后自己想到「这单该找审链
+帮忙」——判断（审什么/审多深/要不要审）是 pianist 的签名，不是模板参数；
+2. **壳侧贴心安排**：runtime/壳层把审链串进收口流程做机械保底（如交货单到手且本单
+未拉过审链→壳按默认规则自动发审链分身，VERDICT 门过了才算收口）——机械那半下沉为
+形状，pianist 忘了也有担保。
+
+下一单候选（修订版）：两路并行落地（判断层路=首发实战让 pianist 真调一次审链；壳路=
+收口位自动串接）+ 评审员接入（glm5.3flash 视觉评审位=审链临时工的特化角色）。

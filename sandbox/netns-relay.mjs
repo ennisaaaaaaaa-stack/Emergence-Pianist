@@ -8,10 +8,12 @@ import net from "node:net";
 const args = process.argv.slice(2);
 let gatePath = null;
 let port = 8788;
+let internalSpec = ""; // 基础设施端口映射：逗号分隔 "lo端口:gate.sock路径"（sandbox-shell-internal）
 let i = 0;
 for (; i < args.length; i++) {
 	if (args[i] === "--gate" && i + 1 < args.length) gatePath = args[++i];
 	else if (args[i] === "--port" && i + 1 < args.length) port = Number(args[++i]);
+	else if (args[i] === "--internal" && i + 1 < args.length) internalSpec = args[++i];
 	else if (args[i] === "--") {
 		i++;
 		break;
@@ -44,7 +46,42 @@ server.on("error", (e) => {
 	process.exit(125);
 });
 
-server.listen(port, "127.0.0.1", () => {
+// 基础设施端口管道（sandbox-shell-internal）：netns lo 上绑基础设施同号端口，字节原样搬
+// 到墙外 gate-<port>.sock（gate-proxy 纯管道转 127.0.0.1:<port>）。消费者零改动——fetch 直连
+// 127.0.0.1:8770 的形状在沙箱内外都成立。单管道失败只降级该端口（其余照常），不掀翻主门禁。
+const internalServers = [];
+if (internalSpec) {
+	for (const pair of internalSpec.split(",")) {
+		const m = pair.match(/^(\d+):(.+)$/);
+		if (!m) {
+			console.error(`[netns-relay] --internal 形状不对（期望 端口:sock路径）: ${pair}`);
+			process.exit(2);
+		}
+		const iPort = Number(m[1]);
+		const iSock = m[2];
+		const is = net.createServer((conn) => {
+			const up = net.connect(iSock);
+			const drop = () => {
+				conn.destroy();
+				up.destroy();
+			};
+			conn.pipe(up);
+			up.pipe(conn);
+			up.on("error", drop);
+			conn.on("error", drop);
+			up.on("close", () => conn.end());
+			conn.on("close", () => up.end());
+		});
+		is.on("error", (e) => {
+			// 端口被占（netns 内已有服务）等情形：出声降级，不掀翻主门禁
+			console.error(`[netns-relay] 基础设施端口 ${iPort} 绑定失败（降级，不影响主门禁）: ${e.message}`);
+		});
+		is.listen(iPort, "127.0.0.1");
+		internalServers.push(is);
+	}
+}
+
+	server.listen(port, "127.0.0.1", () => {
 	const child = spawn(cmd[0], cmd.slice(1), { stdio: "inherit" });
 	for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"])
 		process.on(sig, () => {
@@ -58,6 +95,11 @@ server.listen(port, "127.0.0.1", () => {
 		process.exit(127);
 	});
 	child.on("close", (code, signal) => {
+		for (const is of internalServers) {
+			try {
+				is.close();
+			} catch {}
+		}
 		server.close(() => process.exit(code ?? (signal ? 137 : 0)));
 		setTimeout(() => process.exit(code ?? 0), 2000).unref();
 	});

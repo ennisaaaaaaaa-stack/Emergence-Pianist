@@ -17,6 +17,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isAutoSubmission, validateSkillSubmission } from "./skill-gate.mjs";
+import { nowJstDay } from "./orchestrator/day-clock.mjs";
+import { EXPIRED_DECIDER, EXPIRED_NOTE, ttlExpired } from "./inbox-ttl.mjs";
 
 // ---------------------------------------------------------------------------
 // 风险分层
@@ -63,6 +65,7 @@ const SANDBOX_RED_RES = [
 const ACTION_RISK = {
 	// Grimoire 写面
 	grimoire_submit: "red", // 投Grimoire = 进公开库的写
+	grimoire_submit_auto: "red", // 同上——壳侧闸绿改道后的 action 名，风险面同款
 	grimoire_event: "amber", // 记事件 = 本地账本追加
 	// spoor 工作台写面
 	spoor_journal: "amber",
@@ -108,6 +111,14 @@ export function classify(action, payload) {
 		&& validateSkillSubmission(payload).ok) {
 		return "amber";
 	}
+	// 壳侧闸绿改道后的名字（grimoire_submit→grimoire_submit_auto）：同款降 amber
+	// —— 四道闸已在壳侧 queuedInvoke 过完，这里双条件复验防止绕闸直投新名字。
+	if (action === "grimoire_submit_auto"
+		&& isAutoSubmission(payload)
+		&& payload?._gate_pass === true
+		&& validateSkillSubmission(payload).ok) {
+		return "amber";
+	}
 	// 沙箱命令面深判（施工⑤第二铲）：载荷拆出 command 复用 bash 红灰区正则——
 	// session 内 rm -rf / 逃逸尝试 / 云 metadata 仍挂审批（沙箱高危不减视线）；
 	// 例外：npm install/curl 等下载在容器内是正常工作流 → 维持 amber 不上浮 red
@@ -125,6 +136,7 @@ export function classify(action, payload) {
 
 const ACTION_HUMAN = {
 	grimoire_submit: "往Grimoire提交一本新 skill 书",
+	grimoire_submit_auto: "往Grimoire新兵区提交一本 auto/ skill 书（四道闸已过）",
 	grimoire_event: "往Grimoire事件账本追加一条记录",
 	spoor_journal: "往猎迹工作台追加一条工作记录",
 	spoor_snippet: "在猎迹工作台存一段复用代码",
@@ -151,6 +163,7 @@ const ACTION_HUMAN = {
 
 const ACTION_IMPACT = {
 	grimoire_submit: "写进公开库的待审区——审核通过前不生效，可撤回",
+	grimoire_submit_auto: "写进新兵区（auto/ 待审）——注入面平权可见，审核通过前不进正式区",
 	grimoire_event: "只追加一条记录，不改动已有内容",
 	spoor_journal: "只追加一条记录，不改动已有内容",
 	spoor_snippet: "覆盖同名复用件（不传内容则是读取）",
@@ -265,10 +278,12 @@ export function machineLineOf(action, payload) {
 let approvalSeq = 0;
 
 export class ApprovalQueue {
-	/** @param {string|null} auditFile 审计 JSONL 路径（null=不落盘，测试用） */
-	constructor(auditFile = null) {
+	/** @param {string|null} auditFile 审计 JSONL 路径（null=不落盘，测试用）
+	 *  @param {{now?: () => number}} [opts] 时钟注入位（缺省真钟——day 打点/createdAt/过期判定共用它，F2 钟屋同源） */
+	constructor(auditFile = null, { now = () => Date.now() } = {}) {
 		this.items = new Map(); // id → item
 		this.auditFile = auditFile;
+		this._now = now;
 	}
 
 	/** 红区请求入队。返回完整卡片（pending 态）。
@@ -288,8 +303,9 @@ export class ApprovalQueue {
 			origin,
 			raw: { action, payload: payload ?? null },
 			status: "pending", // pending | executed | denied
+			day: nowJstDay(this._now()), // F2 按天清：落账日 JST 日（钟屋同源）——存量旧卡无此字段，走迁移补打
 			consumedAt: null, // 已批单次放行被消费的时刻（拍板5：null=未消费，可放行一次）
-			createdAt: new Date().toISOString(),
+			createdAt: new Date(this._now()).toISOString(),
 			decidedAt: null,
 			decidedBy: null,
 			note: null,
@@ -322,7 +338,10 @@ export class ApprovalQueue {
 		return null;
 	}
 
-	/** 人类裁决。approve=true 时由调用方负责执行并回填 result。幂等冲突返回 null。 */
+	/** 人类/自动裁决。approve=true 时由调用方负责执行并回填 result。幂等冲突返回 null。
+	 *  by = 决策人标识（decision actor 枚举，F2 补齐）：人类名（缺省 "human"/用户自报）/
+	 *  agent 名（如 "relay-retry"）/ "system-expired"（F2 收件箱按天清的自动 deny actor——
+	 *  过期审批卡的机器决断人，审计账与终态查询面同认这个值，黑工不算裁决）。 */
 	decide(id, approve, by, note) {
 		const item = this.items.get(id);
 		if (!item || item.status !== "pending") return null;
@@ -340,6 +359,38 @@ export class ApprovalQueue {
 			ts: item.decidedAt,
 		});
 		return item;
+	}
+
+	/** F2 按天清（spec 语义 2/实现面 2、3）：过期 pending 审批卡自动转 denied——复用 decide 形状
+	 *  （decidedAt/decidedBy=system-expired/note="inbox TTL expired"），每张走 audit() 落账
+	 *  （审计不许无痕）。返回清理清单 [{ id, kind, agent, action, day }] 供记账行。
+	 *  幂等：只动 pending；已裁决卡（executed/denied）不二次裁决。清理不触发任何 spawn/重派（语义 3）。
+	 *  now=判定钟（缺省本队注入钟/真钟——与 request 打 day 同源，验收 6）；mode 逃生门（缺省 day 正典）。 */
+	sweepExpired(now = this._now(), mode = "day") {
+		const swept = [];
+		for (const item of [...this.items.values()]) {
+			if (item.status !== "pending") continue;
+			const atMs = Date.parse(item.createdAt ?? "");
+			if (!ttlExpired(mode, { day: item.day, atMs: Number.isFinite(atMs) ? atMs : null, kind: "审批卡" }, now)) continue;
+			this.decide(item.id, false, EXPIRED_DECIDER, EXPIRED_NOTE);
+			swept.push({ id: item.id, kind: "审批卡", agent: item.agent, action: item.action, day: item.day ?? null });
+		}
+		return swept;
+	}
+
+	/** F2 上线迁移（施工读法 A，spec 实现面 1/验收 7）：存量 pending 卡无 day 的补打 day=部署日
+	 *  （真钟 nowJstDay()——部署日不是注入位，真壳迁移没有假钟一说）。幂等：已有 day 不动。
+	 *  补打本身也落审计（迁移不留暗账）。通道：壳 POST /approvals/backfill-day ← tools/migrate-inbox-day.mjs。
+	 *  补打后当日不清（day=部署日=today），次日起自然过期——不是当庭清杀。 */
+	backfillDay(day = nowJstDay()) {
+		const backfilled = [];
+		for (const item of this.items.values()) {
+			if (item.status !== "pending" || typeof item.day === "string") continue;
+			item.day = day;
+			backfilled.push({ id: item.id, kind: "审批卡", agent: item.agent });
+			this.audit({ id: item.id, action: item.action, agent: item.agent, migrate: true, day, by: "system-migrate", ts: new Date().toISOString() });
+		}
+		return { day, backfilled };
 	}
 
 	/** 自动放行（APPROVAL_MODE=auto 时的红区）也记审计——暗区不许无痕 */

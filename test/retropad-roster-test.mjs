@@ -17,8 +17,20 @@ const __credTmp = fs.mkdtempSync(path.join(os.tmpdir(), "pianist-cred-seal-"));
 process.env.PORTALK_CRED_DIR = path.join(__credTmp, "cred");
 process.env.PORTALK_CRED_JOURNAL = path.join(__credTmp, "journal.jsonl");
 
+// v2-2 零真钱补钉：retropad v2 走编排器拉起（ORCH_PI_BIN 可接）——ambient 有真钥匙时
+// 旧版会真拉 pi（真钱+不定时长）。纪律「ORCH_PI_BIN 全程指 stub」：这里接一个无裁决即退的
+// stub（exit 0 无 DONE → 编排器按 session 死亡入账 → retropad exit 3，在既有断言 0|3 容许面内）。
+// 遥测/会话/进度目录也全指 tmp（编排器拉起路径会碰这些目录，不写生产路径）。
+const __orchTmp = fs.mkdtempSync(path.join(os.tmpdir(), "pianist-roster-orch-"));
+for (const d of ["telemetry", "sessions", "progress"]) fs.mkdirSync(path.join(__orchTmp, d), { recursive: true });
+process.env.PIANIST_TELEMETRY_DIR = path.join(__orchTmp, "telemetry");
+process.env.PIANIST_SESSIONS_DIR = path.join(__orchTmp, "sessions");
+process.env.ORCH_PROGRESS_DIR = path.join(__orchTmp, "progress");
+const __stubPi = path.join(__orchTmp, "stub-pi.mjs");
+fs.writeFileSync(__stubPi, `console.log("(stub pi) 无裁决即退——roster 测试不拉真分身");\nprocess.exit(0);\n`);
+process.env.ORCH_PI_BIN = __stubPi;
+
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PI_BIN = path.join(ROOT, "node_modules", ".bin", "pi");
 
 // ---- 与 retropad.mjs 同构的两个纯函数（复制而非 import——retropad 是脚本不是模块，顶层有副作用） ----
 function abbreviate(name) {
@@ -88,6 +100,7 @@ checks.push(["壳死：降级 warn 出声", r2.err.includes("名单拉取失败"
 checks.push(["壳死：仍 exit 0（不中断）", r2.code === 0 || r2.code === 3]); // 0=闸门三提前收工；3=pi无key——都不是 roster 中断
 console.warn = origWarn;
 mockShell.close();
+fs.rmSync(__orchTmp, { recursive: true, force: true });
 
 let pass = 0;
 for (const [name, ok] of checks) {

@@ -40,6 +40,8 @@ const ROLE_KEY_MAP = {
 	沙箱: "sandbox", sandbox: "sandbox",
 	指针: "pointer", pointer: "pointer",
 	验收: "acceptance", acceptance: "acceptance",
+	模型: "model", model: "model", // 10/16 the user定案：评审可配置=编排层自带——角色级模型覆盖（缺省 conductor 同款 glm-5.2）
+	审链: "review", review: "review", // 10/16 审链接线：施工角色行声明「审链:评审员」→ 交付后自动派该角色审（review-chain.mjs）
 };
 
 const DURATION_UNITS = {

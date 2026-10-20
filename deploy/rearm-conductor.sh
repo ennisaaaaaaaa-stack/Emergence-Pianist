@@ -17,9 +17,18 @@
 #   就这么在「20s 确认窗」里全瞎两读，把正写收尾报告的 wander 杀了（报告/遥测尾批/
 #   launch 记录三失）。判据只会晚收不会误收：任何读数异常一律按「忙」处理。
 #
+# 第二盲区铁律（2026-10-12 wander 第一班种、第二班收）：cgroup 判忙只看得见
+#   conductor 自己人——orchestrator 拉起的场外施工者（ppid 链在场外）同样半写
+#   启动码，cgroup 对它全瞎。当晚 00:29 挂的 rearm 对场外pianist的半成品毫无知觉，
+#   只能亲手 stop 撤刀。修法：判忙加第二判据 tree_busy——启动码平面（src/ 与
+#   package.json）git 树有未提交改动 = 有人在写（不管他在哪），按忙。误忙的代价
+#   只是晚一轮补刀；漏忙的代价是把 restart 打进半写的启动码。哲学同源：判忙的
+#   边界永远在补最后一双眼睛。
+#
 # 测试缝（test/rearm-conductor-test.mjs 用，不动真系统）：
 #   REARM_UNIT / REARM_CGROUP_PROCS / REARM_SYSTEMCTL / REARM_CONFIRM_SECS /
-#   REARM_POLL_SECS / REARM_TOTAL_SECS。
+#   REARM_POLL_SECS / REARM_TOTAL_SECS / REARM_TREE_PROBE（非空则整个替掉 git
+#   探针：stub 输出非空=树脏，退出非零=探针失败按忙）/ REARM_REPO（git 探针仓根）。
 set -u
 
 UNIT="${REARM_UNIT:-pianist-conductor}"
@@ -28,22 +37,47 @@ SYSTEMCTL="${REARM_SYSTEMCTL:-systemctl}"
 CONFIRM_SECS="${REARM_CONFIRM_SECS:-20}"   # 判闲后确认窗：隔这么久再读一次还是闲才算数
 POLL_SECS="${REARM_POLL_SECS:-10}"         # 忙时轮询周期
 TOTAL_SECS="${REARM_TOTAL_SECS:-7200}"     # 总超时：自灭退场，新代码等宿主下次重启自然上膛
+REPO="${REARM_REPO:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
+TREE_PROBE="${REARM_TREE_PROBE:-}"          # 非空则整个替掉 git 探针（测试缝）
+# 启动码平面：conductor 启动期 import 面（src/ 全树 + package.json）。探宽无害——
+# 误忙只延刀不误杀；credentials/ 柜面与 docs/ 不算（改它们不进启动期）。
+STARTUP_PATHS="src package.json"
 
 say() { echo "[rearm] $*"; }
 
-# 判闲：cgroup.procs 可读，且去掉 MainPID 后没有别的 PID（空文件也算闲——unit 没进程）。
-# 读不到文件 / systemctl 问不出 MainPID → 一律按忙（晚收不误收，绝不猜）。
+# 树探针（第二判据）：启动码平面有未提交改动 = 有人在写（场外pianist不进 cgroup，
+# 但他的 WIP 落在 git 树上）。探针失败 / git 不可用 / 仓读不出 → 一律按忙
+# （晚收不误收，绝不猜）。输出空且退出 0 才算树净。
+tree_busy() {
+	if [ -n "$TREE_PROBE" ]; then
+		OUT="$($TREE_PROBE 2>/dev/null)"; RC=$?
+		[ "$RC" -eq 0 ] || return 0
+		[ -n "$OUT" ] && return 0
+		return 1
+	fi
+	command -v git >/dev/null 2>&1 || return 0
+	git -C "$REPO" status --porcelain -- $STARTUP_PATHS >/dev/null 2>&1 || return 0
+	[ -n "$(git -C "$REPO" status --porcelain -- $STARTUP_PATHS 2>/dev/null)" ] && return 0
+	return 1
+}
+
+# 判闲：cgroup.procs 可读，且去掉 MainPID 后没有别的 PID（空文件也算闲——unit 没进程），
+# 且启动码树净（第二判据 tree_busy）。读不到文件 / systemctl 问不出 MainPID / 树读
+# 不出 → 一律按忙（晚收不误收，绝不猜）。
+IDLE_WHY=""
 is_idle() {
-	[ -r "$CGROUP_PROCS" ] || return 1
-	MAIN="$("$SYSTEMCTL" show "$UNIT" -p MainPID --value 2>/dev/null)" || return 1
+	IDLE_WHY=""
+	[ -r "$CGROUP_PROCS" ] || { IDLE_WHY="cgroup.procs 读不到"; return 1; }
+	MAIN="$("$SYSTEMCTL" show "$UNIT" -p MainPID --value 2>/dev/null)" || { IDLE_WHY="MainPID 问不出"; return 1; }
 	[ -n "$MAIN" ] || MAIN=0
 	for p in $(cat "$CGROUP_PROCS" 2>/dev/null); do
-		[ "$p" = "$MAIN" ] || return 1
+		[ "$p" = "$MAIN" ] || { IDLE_WHY="cgroup 还有值班进程"; return 1; }
 	done
+	tree_busy && { IDLE_WHY="启动码树未提交/读不出——场外施工者在半写？"; return 1; }
 	return 0
 }
 
-say "上岗：等 $UNIT 的 cgroup 只剩主进程（确认窗 ${CONFIRM_SECS}s 两读，总超时 ${TOTAL_SECS}s）后补刀 restart"
+say "上岗：等 $UNIT 的 cgroup 只剩主进程且启动码树净（确认窗 ${CONFIRM_SECS}s 两读，总超时 ${TOTAL_SECS}s）后补刀 restart"
 elapsed=0
 streak=0
 state="startup"
@@ -68,7 +102,7 @@ while [ "$elapsed" -lt "$TOTAL_SECS" ]; do
 		elapsed=$((elapsed + CONFIRM_SECS))
 	else
 		if [ "$state" != "busy" ]; then
-			say "cgroup 还有值班进程——继续等（不误收）"
+			say "${IDLE_WHY:-cgroup 还有值班进程}——继续等（不误收）"
 			state="busy"
 		fi
 		streak=0

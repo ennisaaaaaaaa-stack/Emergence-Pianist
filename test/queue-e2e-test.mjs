@@ -156,6 +156,41 @@ check("auto 审计有痕（by=auto:auto）", audit.some((a) => a.by === "auto:au
 check("deny 审计有痕", audit.some((a) => a.approve === false && a.by === "tester"));
 autoProc.kill();
 
+// ---- 9) 钉二分流：auto/ 闸绿改道 /skill/auto（hui 2026-10-11 山海侧新闸门口）----
+const autoPayload = {
+	name: "auto/e2e-shunt-test",
+	tags: ["self-learning"],
+	body: "测试用书体——验分流不改内容",
+	trigger: "e2e-shunt",
+	boundary: "仅测试",
+	why: "验壳侧改道",
+	control_case: "不应触发：e2e 别的活",
+};
+const shunt = await (await fetch(`${shellUrl}/tools/invoke`, {
+	method: "POST", headers: { "content-type": "application/json" },
+	body: JSON.stringify({ action: "grimoire_submit", agent: "pianist-dev-1", intent: "分流测试", payload: autoPayload }),
+})).json();
+check("auto/ 闸绿走 amber 立即执行（不挂审批）", !shunt.deferred && shunt.status === 200);
+check("改道命中 POST /skill/auto", grimoirePosts.some((p) => p.path === "/skill/auto"));
+check("不再打正式口 /skill（auto/ 名字）", !grimoirePosts.some((p) => p.path === "/skill" && p.body.includes("auto/e2e-shunt-test")));
+check("payload 带 _gate_pass 与 operator", grimoirePosts.filter((p) => p.path === "/skill/auto").every((p) => p.body.includes("_gate_pass") && p.body.includes("operator")));
+// 闸红打回：缺 control_case 的 auto/ 提交 → 422 不出门
+const badAuto = { ...autoPayload, control_case: "" };
+const gateRed = await (await fetch(`${shellUrl}/tools/invoke`, {
+	method: "POST", headers: { "content-type": "application/json" },
+	body: JSON.stringify({ action: "grimoire_submit", agent: "pianist-dev-1", intent: "闸红测试", payload: badAuto }),
+})).json();
+check("auto/ 闸红 422 打回带 reasons", gateRed.status === 422 && Array.isArray(gateRed.body?.reasons) && gateRed.body.reasons.length > 0);
+const postsBefore = grimoirePosts.length;
+check("闸红零出网", grimoirePosts.length === postsBefore);
+// 绕闸直投新名字：不带 _gate_pass 调 grimoire_submit_auto → red 挂起，不执行
+const bypass = await (await fetch(`${shellUrl}/tools/invoke`, {
+	method: "POST", headers: { "content-type": "application/json" },
+	body: JSON.stringify({ action: "grimoire_submit_auto", agent: "pianist-dev-1", intent: "绕闸测试", payload: autoPayload }),
+})).json();
+check("绕闸直投新名字 → red 挂起", bypass.deferred === true);
+check("绕闸未执行（零新增 POST）", grimoirePosts.length === postsBefore);
+
 shellProc.kill();
 mockGrimoire.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });

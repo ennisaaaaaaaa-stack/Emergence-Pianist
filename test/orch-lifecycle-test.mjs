@@ -36,7 +36,11 @@ process.env.ORCH_PROGRESS_DIR = progressDir;
 process.env.PIANIST_TELEMETRY_DIR = telemetryDir;
 process.env.PIANIST_SESSIONS_DIR = sessionsDir;
 delete process.env.ZAI_CODING_CN_API_KEY;
-delete process.env.PIANIST_SHELL_URL;
+// 隔离铁律（2026-10-12 wander 实录）：不能只 delete——buildRuntime 缺省就是 127.0.0.1:8770，
+// conductor 场景里真壳在场时审批轮询够得着它，真 pending 卡会被拉进测试收件箱
+// （当时实录：本测「挂上即转」断 inbox 空，被一张真审批卡打红，形状酷似回归）。
+// 指死端口才算真隔离（连接拒绝 → 审批轮询出声跳过，抖动去重不刷屏）。
+process.env.PIANIST_SHELL_URL = "http://127.0.0.1:1";
 
 // ---- stub pi（零真钱）：done=写 DONE 退场；hang=挂死不写（等外部信号收尸——runtime 接线段用） ----
 const stubPath = path.join(tmpRoot, "stub-pi.mjs");

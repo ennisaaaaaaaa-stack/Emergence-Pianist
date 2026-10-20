@@ -46,7 +46,8 @@
       "api.github.com",
       "codeload.github.com",
       "raw.githubusercontent.com",
-      "objects.githubusercontent.com"
+      "objects.githubusercontent.com",
+      "arxiv.org"
     ],
     "hardDeny": {
       "cidrs": [

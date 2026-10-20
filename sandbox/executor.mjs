@@ -9,7 +9,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { startGateProxy } from "./gate-proxy.mjs";
+import { startGateProxy, startShellPipes } from "./gate-proxy.mjs";
 import { resolveEngine } from "./engine-registry.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +18,10 @@ export const JOURNAL_PATH = path.join(REPO_ROOT, "data", "sandbox-journal.jsonl"
 
 const SANDBOX_UID = 65534; // nobody —— 特权降落
 const SANDBOX_GID = 65534;
+
+// stdout 回收截尾上限（8MB，任务书定案值）：交货单（DONE/BLOCKED 行）在输出末尾，留后半足够裁决；
+// 子进程输出再大，内存峰值也只有 上限+单chunk（滚动裁头留尾）
+export const STDOUT_CAPTURE_LIMIT = 8 * 1024 * 1024;
 
 /** 读策略并做最低限度校验（坏策略大声失败，不静默兜底） */
 export function loadPolicy(policyPath) {
@@ -103,7 +107,10 @@ export function ensureLauncher() {
  * @param {string} [o.agent] 记账工牌（默认取策略 identity.agent）
  * @param {number} [o.timeoutMs] 超时杀全组
  * @param {Record<string,string>} [o.env] 额外注入子进程的环境变量（覆盖默认）
+ * @param {boolean} [o.captureStdout] 回收子进程 stdout（默认 false=打到本执行器控制台，逐字节等价于现状）
  * @returns {Promise<{code:number|null, signal:string|null, journaledHosts:string[]}>}
+ *   captureStdout=true 时返回值额外带 stdoutTail：stdout 截尾字符串（上限 STDOUT_CAPTURE_LIMIT 字节——
+ *   交货单在输出末尾，留后半即可；全文可选落盘：env PORTALK_SANDBOX_STDOUT_LOG=<路径>，追加写）
  */
 export async function runSandboxed({
 	command,
@@ -111,6 +118,7 @@ export async function runSandboxed({
 	agent,
 	timeoutMs,
 	env: extraEnv,
+	captureStdout = false, // true=fd1 改 pipe 回收 stdout（返回 stdoutTail）；默认关=与现状逐字节等价
 }) {
 	if (!Array.isArray(command) || command.length === 0) throw new Error("command 不能为空");
 	if (process.getuid && process.getuid() !== 0)
@@ -140,6 +148,10 @@ export async function runSandboxed({
 		journalPath: JOURNAL_PATH,
 	});
 	await gate.ready;
+	// ②-b 基础设施端口管道（sandbox-shell-internal）：同 scratch 目录开 gate-<port>.sock 纯管道
+	// 转本机 127.0.0.1:<port>，netns-relay 侧对应绑同号端口——沙箱内 127.0.0.1:8770 等直连形状成立。
+	const shellPipes = startShellPipes({ scratchDir: scratch });
+	const internalSpec = shellPipes.sockets.map((s) => `${s.port}:${s.socketPath}`).join(",");
 
 	// ③ 组装引导参数：Landlock 清单 = 策略 ro + 策略 rw + 暂存区（node 农场在 /usr 下，已覆盖）
 	const roPaths = [...new Set(policy.filesystem.readOnly)];
@@ -164,6 +176,7 @@ export async function runSandboxed({
 		gate.socketPath,
 		"--port",
 		String(policy.network.proxyPort),
+		...(internalSpec ? ["--internal", internalSpec] : []), // 基础设施端口管道（sandbox-shell-internal）
 		"--",
 		...command,
 	];
@@ -199,15 +212,39 @@ export async function runSandboxed({
 		...extraEnv,
 	};
 
+	// stdout 回收（captureStdout=true）：fd1 由 inherit 改 pipe——沙箱内 stdout（含 pi 会话全文）
+	// 原先打进本执行器控制台，编排器视角等于丢弃；改道后收集截尾交裁决。内存只留 STDOUT_CAPTURE_LIMIT
+	// 字节尾巴；全文可选落盘（env PORTALK_SANDBOX_STDOUT_LOG=<路径>，追加写，复盘用）。
+	let stdoutTailBuf = null;
+	let stdoutLog = null;
+	let stdoutLogDone = Promise.resolve();
+	if (captureStdout) {
+		stdoutTailBuf = Buffer.alloc(0);
+		const logPath = process.env.PORTALK_SANDBOX_STDOUT_LOG;
+		if (logPath) {
+			stdoutLog = fs.createWriteStream(logPath, { flags: "a" });
+			stdoutLog.on("error", () => {}); // 落盘是可选诊断：坏盘只许丢日志，不许掀翻执行器
+			stdoutLogDone = new Promise((r) => stdoutLog.once("close", r));
+		}
+	}
 	const child = spawn(argv[0], argv.slice(1), {
 		cwd: process.cwd(),
 		env,
 		detached: true, // 独立进程组：超时/信号时整组收割，不留孤儿
-		stdio: ["inherit", "inherit", "inherit", "pipe"], // fd3 = 引导器状态管道
+		stdio: ["inherit", captureStdout ? "pipe" : "inherit", "inherit", "pipe"], // fd3 = 引导器状态管道
 	});
+	if (captureStdout)
+		child.stdout.on("data", (chunk) => {
+			stdoutLog?.write(chunk);
+			stdoutTailBuf = Buffer.concat([stdoutTailBuf, chunk]);
+			if (stdoutTailBuf.length > STDOUT_CAPTURE_LIMIT)
+				stdoutTailBuf = stdoutTailBuf.subarray(stdoutTailBuf.length - STDOUT_CAPTURE_LIMIT); // 滚动裁头留尾
+		});
+	if (stdoutLog) child.on("close", () => stdoutLog.end()); // 子进程关窗即冲盘（收工/被杀两路都走到）
 
 	const cleanup = () => {
 		gate.close();
+		shellPipes.close();
 		fs.rmSync(scratch, { recursive: true, force: true });
 	};
 
@@ -255,6 +292,9 @@ export async function runSandboxed({
 		child.on("close", (code, signal) => resolve({ code, signal }));
 	});
 	if (killer) clearTimeout(killer);
+	await stdoutLogDone; // 落盘冲净再结算（captureStdout=false 时是直通 Promise）
 	cleanup();
-	return { ...result, journaledHosts: [...gate.journaledHosts] };
+	const out = { ...result, journaledHosts: [...gate.journaledHosts] };
+	if (captureStdout) out.stdoutTail = stdoutTailBuf.toString("utf8"); // 截头可能落在多字节中间——弃首字符不伤交货单
+	return out;
 }

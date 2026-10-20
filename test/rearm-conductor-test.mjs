@@ -3,6 +3,11 @@
 // 全瞎两读 → 00:28:34 把正写收尾报告的 wander 杀了（WANDER-OPS/遥测尾批/launch 记录三失）。
 // 覆盖：语法 / 探针纪律静态钉（不许再出现 pgrep）/ 判闲-确认-补刀 / 忙不误收 /
 //       读数失败按忙 / 忙转闲可恢复（补刀发生在退役之后，不在上岗之时）。
+// 2026-10-12 wander 第二班增：第二盲区铁律——cgroup 只看得见 conductor 自己人，
+//       场外pianist（orchestrator 拉起，ppid 链在场外）半写启动码时 cgroup 判闲是假的；
+//       新判据 tree_busy：启动码平面（src/ + package.json）git 树非净即忙。覆盖：
+//       树脏不补刀 / 探针失败按忙 / 静态钉。REARM_TREE_PROBE stub 同时让既有用例与
+//       真仓 git 状态解耦（此前真仓 src/ 有 WIP 时判闲用例会随机翻车——顺手拆雷）。
 // 不动真系统：CGROUP_PROCS 指 tmp 夹具，SYSTEMCTL 指 stub（show 出固定 MainPID，restart 落日志）。
 import fs from "node:fs";
 import path from "node:path";
@@ -27,6 +32,8 @@ const codeOnly = src.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n"); // 
 check("探针纪律：读 cgroup.procs 对照 systemctl MainPID", /cgroup\.procs/.test(codeOnly) && /MainPID/.test(codeOnly));
 check("探针纪律：代码面无 pgrep（pi 把 argv 改写成 'pi'——pgrep -f cli.js 是瞎的，这是 09-29 00:28 误杀的病根）", !/pgrep/.test(codeOnly));
 check("判据方向：读数异常按忙（is_idle 里读不到就 return 1，只会晚收不会误收）", /is_idle\(\)\s*\{[\s\S]*?return 1[\s\S]*?return 1[\s\S]*?\}/.test(src));
+check("第二盲区铁律：tree_busy 进 is_idle 且以 git status 扫启动码平面（场外pianist的 WIP 落在树上，cgroup 看不见）",
+	/tree_busy\(\)/.test(codeOnly) && codeOnly.includes('git -C "$REPO" status --porcelain'));
 
 // ---- 2. 沙盒件：stub systemctl + cgroup.procs 夹具 ----
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rearm-conductor-test-"));
@@ -41,6 +48,17 @@ fs.writeFileSync(stub, [
 ].join("\n"));
 fs.chmodSync(stub, 0o755);
 const MAINPID = "4242";
+// 树探针 stub：TREE_STUB_MODE 控制形状（clean=空输出退0 / dirty=一行输出退0 / fail=退3非零）
+const treeStub = path.join(tmp, "tree-stub.sh");
+fs.writeFileSync(treeStub, [
+	"#!/bin/sh",
+	'case "${TREE_STUB_MODE:-clean}" in',
+	"  fail)  exit 3 ;;",
+	'  dirty) echo " M src/conductor.mjs" ;;',
+	"esac",
+	"exit 0",
+].join("\n"));
+fs.chmodSync(treeStub, 0o755);
 function baseEnv(extraSecs) {
 	return {
 		...process.env,
@@ -49,6 +67,7 @@ function baseEnv(extraSecs) {
 		REARM_SYSTEMCTL: stub,
 		STUB_LOG: stubLog,
 		STUB_MAINPID: MAINPID,
+		REARM_TREE_PROBE: treeStub, // 既有用例一律树净——与真仓 git 状态解耦
 		REARM_CONFIRM_SECS: "1",
 		REARM_POLL_SECS: "1",
 		...extraSecs,
@@ -91,6 +110,21 @@ clearTimeout(lateTimer);
 check("忙转闲：退役后才补刀（exit=0 + restart 且发生在改夹具之后）",
 	code === 0 && stubCalls().includes("restart pianist-conductor") && (out.includes("值班进程") && out.includes("补刀")),
 	`code=${code} out=${out.trim().slice(0, 160)}`);
+
+// ---- 7. 第二盲区：cgroup 判闲但启动码树脏（2026-10-12 00:29 实录形状——场外pianist半写）----
+fs.rmSync(stubLog, { force: true });
+writeProcs([Number(MAINPID)]); // cgroup 里只剩主进程——单看 cgroup 是「闲」
+const treeDirty = spawnSync("sh", [SCRIPT], { env: baseEnv({ REARM_TOTAL_SECS: "3", TREE_STUB_MODE: "dirty" }), encoding: "utf8", timeout: 20000 });
+check("第二盲区：树脏不补刀（cgroup 闲但启动码有 WIP → 超时自灭，绝不 restart 进半成品）",
+	treeDirty.status !== 0 && !stubCalls().includes("restart"),
+	`status=${treeDirty.status} out=${(treeDirty.stdout || "").split("\n").filter((l) => l.includes("rearm]")).slice(-2).join(" | ").slice(0, 160)}`);
+check("第二盲区：出声点名启动码树（不装死，读账者能看出它在等谁）", (treeDirty.stdout || "").includes("启动码树") && (treeDirty.stdout || "").includes("继续等"));
+
+// ---- 8. 探针失败按忙：树读不出 = 瞎 = 不开枪 ----
+fs.rmSync(stubLog, { force: true });
+const probeDead = spawnSync("sh", [SCRIPT], { env: baseEnv({ REARM_TOTAL_SECS: "2", TREE_STUB_MODE: "fail" }), encoding: "utf8", timeout: 20000 });
+check("探针失败=忙：不 restart、超时自灭（判据只会晚收不会误收，同一铁律的树面）",
+	probeDead.status !== 0 && !stubCalls().includes("restart"));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${pass}/${total} passed`);

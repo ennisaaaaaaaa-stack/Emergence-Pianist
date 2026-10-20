@@ -36,7 +36,10 @@ process.env.ORCH_PROGRESS_DIR = progressDir;
 process.env.PIANIST_TELEMETRY_DIR = telemetryDir;
 process.env.PIANIST_SESSIONS_DIR = sessionsDir;
 delete process.env.ZAI_CODING_CN_API_KEY; // 剥 ambient，走柜路径（env-fallback 不是本测的路）
-delete process.env.PIANIST_SHELL_URL; // 壳不在场也照样 spawn（缺省 8770 只是 env 值）
+// 壳不在场也照样 spawn。隔离铁律（2026-10-12）：不能只 delete——缺省就是 8770，
+// conductor 场景真壳在场时审批轮询够得着它（真 pending 卡漏进测试收件箱）；
+// 指死端口才算真隔离，语义不变：连接拒绝 → spawn 照样走、轮询出声跳过。
+process.env.PIANIST_SHELL_URL = "http://127.0.0.1:1";
 
 // ---- stub pi（拍板9）：.mjs 后缀直接当入口；env 驱动行为 ----
 const stubPath = path.join(tmpRoot, "stub-pi.mjs");
@@ -161,13 +164,30 @@ ${extra}`);
 	const sessName = (ms) => new Date(ms).toISOString().replace(/[:.]/g, "-").replace(/(\d{2})-(\d{3})Z$/, "$1-$2Z") + "_deadbeef.jsonl";
 	const inWin = path.join(sessionsDir, sessName(T + 60_000)); // 发车 +60s：窗口内
 	const outWin = path.join(sessionsDir, sessName(T + 400_000)); // +400s：窗外不锁
+	// 2026-10-10 回归三钉：pi 会话落 --cwd-sanitized--/ 子目录（live-e2e 锁空缺口）+ 不对称窗下沿（v2.1 同款）
+	const subDir = path.join(sessionsDir, "--root-portalk-runtime--");
+	fs.mkdirSync(subDir, { recursive: true });
+	const inSub = path.join(subDir, sessName(T + 30_000)); // 子目录 + 窗口内：必须锁上
+	const stalePre = path.join(subDir, sessName(T - 400_000)); // 发车前 400s 残留：不锁（旧对称窗会误锁）
+	const skewPre = path.join(subDir, sessName(T - 2_000)); // 发车前 2s（挂钟微偏容忍）：锁
 	fs.writeFileSync(inWin, "{\"type\":\"session\"}\n");
 	fs.writeFileSync(outWin, "{\"type\":\"session\"}\n");
+	fs.writeFileSync(inSub, "{\"type\":\"session\"}\n");
+	fs.writeFileSync(stalePre, "{\"type\":\"session\"}\n");
+	fs.writeFileSync(skewPre, "{\"type\":\"session\"}\n");
 	fs.utimesSync(inWin, new Date(T), new Date(T));
+	fs.utimesSync(inSub, new Date(T), new Date(T));
+	fs.utimesSync(skewPre, new Date(T), new Date(T));
 	const beats = [];
 	const w = new HeartbeatWatcher({ onBeat: (id, ev) => beats.push({ id, ev }) });
 	w.watch("m-sess", { spawnAt: T, sessionDir: sessionsDir, telemetryFile: null });
 	check("watcher：session 锁定=发车 ±150s 窗口内文件（窗外不锁）", w.locked("m-sess").includes(inWin) && !w.locked("m-sess").includes(outWin));
+	check("watcher：子目录会话锁得上（pi 落 --cwd--/ 子目录，live-e2e 锁空缺口回归钉）",
+		w.locked("m-sess").includes(inSub));
+	check("watcher：发车前 400s 残留不锁（不对称窗下沿 -5s，对称窗会误锁冒烟残留）",
+		!w.locked("m-sess").includes(stalePre));
+	check("watcher：发车前 2s 容忍锁上（lockSkew 挂钟微偏的本意）",
+		w.locked("m-sess").includes(skewPre));
 	check("watcher：mtime 未推进不喂 beat", w.poll().length === 0);
 	fs.utimesSync(inWin, new Date(T + 5_000), new Date(T + 5_000));
 	const b1 = w.poll();
@@ -186,6 +206,40 @@ ${extra}`);
 	b2 = w.poll();
 	check("watcher：截断行拼齐后喂、坏行跳过不炸", b2.length === 1 && b2[0].ev.kind === "message_end");
 	w.stop();
+}
+
+// ============ 3b) 源①滚动锁定（live 缺口 2026-10-11：真 pi 首行延迟 ~45s，锁发生时文件未落盘）============
+{
+	// 场景：watch 时 session 文件不存在；poll 若干轮后文件才出现（名在窗内）——重扫应锁上并喂 beat。
+	// 窗语义回归：迟到的文件名若在窗外（>spawnAt+150s），即使滚动重扫也不锁。
+	const T2 = Date.now();
+	const sessName2 = (ms) => new Date(ms).toISOString().replace(/[:.]/g, "-").replace(/(\d{2})-(\d{3})Z$/, "$1-$2Z") + "_feedface.jsonl";
+	const sub2 = path.join(sessionsDir, "--late-pi--");
+	fs.mkdirSync(sub2, { recursive: true });
+	const lateIn = path.join(sub2, sessName2(T2 + 20_000)); // spawn +20s 名：窗内
+	const beats2 = [];
+	const w2 = new HeartbeatWatcher({ onBeat: (id, ev) => beats2.push({ id, ev }), rescanMs: 0 }); // 限频关（测试：每轮 poll 都可扫）
+	w2.watch("m-late", { spawnAt: T2, sessionDir: sessionsDir, telemetryFile: null });
+	check("滚动锁定：watch 时文件不在场 → 初始锁空", w2.locked("m-late").length === 0);
+	check("滚动锁定：锁空时 poll 不炸不喂", w2.poll().length === 0);
+	fs.writeFileSync(lateIn, "{\"type\":\"session\"}\n");
+	const locked2 = w2.poll(); // 重扫应锁上（文件已出现、窗未关）
+	check("滚动锁定：迟到的窗内文件 poll 重扫锁上", w2.locked("m-late").includes(lateIn));
+	// 写盘 mtime 与 spawnAt 毫秒竞争（可早可晚）——用显式 utimes 模拟 pi 后续写入推进，beat 必到
+	fs.utimesSync(lateIn, new Date(T2 + 5_000), new Date(T2 + 5_000));
+	const locked2b = w2.poll();
+	check("滚动锁定：锁定后 mtime 推进 → 喂 beat（kind=session_mtime）",
+		locked2b.length === 1 && locked2b[0].source === "session" && locked2b[0].ev.kind === "session_mtime");
+	// 窗关后不再锁：新出现的窗外文件不进锁定集
+	const T3 = Date.now();
+	const outLate = path.join(sub2, sessName2(T3 + 10_000)); // 距 T3 +10s 但会挂新 watch
+	const w3 = new HeartbeatWatcher({ onBeat: () => {} });
+	// 手动把 spawnAt 拨回过去 + 超过窗：直接构造窗已关的状态
+	w3.watch("m-closed", { spawnAt: T3 - 200_000, sessionDir: sessionsDir, telemetryFile: null });
+	fs.writeFileSync(outLate, "{\"type\":\"session\"}\n");
+	w3.poll();
+	check("滚动锁定：锁窗已关 → 不再重扫（窗外新文件不锁）", !w3.locked("m-closed").includes(outLate));
+	w2.stop(); w3.stop();
 }
 
 // ============ 4) stub 端到端（验收1）：fixture 任务书→buildRuntime→真 spawn stub→DONE→收尾入账 ============

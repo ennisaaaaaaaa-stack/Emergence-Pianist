@@ -6,8 +6,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { envOrVault } from "../credentials/env-source.mjs";
+import { evaluateRetroTrigger, readRetroState, DEFAULT_RETRO_INTERVAL_MS } from "./orchestrator/retro-trigger.mjs";
+import { emitEvent } from "./orchestrator/emit.mjs";
+import { nowJstDay } from "./orchestrator/day-clock.mjs";
+import { parseTtlMode, sweepAccountLine } from "./inbox-ttl.mjs";
+import { evaluateSchedule, readSchedule, writeSchedule, readActiveHoursFile } from "./schedule/index.mjs";
 
 const args = process.argv.slice(2);
 function arg(name, dflt) {
@@ -40,8 +46,42 @@ const HOTSPOT_OUT = process.env.CONDUCTOR_HOTSPOT_OUT ?? path.join(CWD, "data", 
 const HOTSPOT_DIR = process.env.CONDUCTOR_HOTSPOT_DIR ?? process.env.PIANIST_TELEMETRY_DIR ?? path.join(CWD, "data", "telemetry");
 const HOTSPOT_RETRY_MS = 5 * 60_000;
 
+// retro 触发心跳缝（2026-10-11 v2-2 接线单）：retro-trigger 三源触发器造好了没人调，错误热点
+// 躺在 latest.json 里没人扣扳机。本缝=消费方：每 tick 判一次「现在值不值得拉 retropad」——判定在
+// conductor 侧做（判定行进 conductor journal，不用翻 retropad 日志），fire 时拉起 retropad
+// （不带 --force：retropad 内部幂等复判一次，几秒间隔内热点数不变，双保险不是冗余）。
+// 与 hotspot 心跳同款口径：纯机械零 LLM、不进 part 池、不记 draws/launches、不进预算账（复盘
+// 分身的花销走 retropad/buildRuntime 自己的记账路线，conductor 不代管）。连环拉保护：fire 后
+// state 记 last_retro_fire（对齐 last_hotspot_scan 形状），冷却窗（复用 DEFAULT_RETRO_INTERVAL_MS
+// 语义）内不再 fire——成败同窗（失败也等窗过，不刷屏重试）。dry-run 只彩排不 spawn。
+const RETRO_STATE_FILE = process.env.CONDUCTOR_RETRO_STATE ?? path.join(CWD, "data", "retro", "state.json"); // retropad 合法收工写的账（due 源读它）——conductor 只读不写
+const RETROPAD_BIN = process.env.CONDUCTOR_RETROPAD_BIN ?? path.join(CWD, "src", "retropad.mjs"); // 测试/演练可换 stub（同 CONDUCTOR_PI_BIN 位）
+const RETRO_COOLDOWN_MS = DEFAULT_RETRO_INTERVAL_MS; // 连环拉冷却窗：与抽检间隔同钟（6h）
+
+// 更夫（F1，2026-10-18 f1-watchman 单，spec：docs/f1-watchman-spec-v0.1.md）：launch 死了之后
+// 的机械判定——拉不拉、拉几次、什么时候停手转人类。纯判定在 src/watchman.mjs（零 IO 零
+// LLM），本文件只做接线：①两处死亡分支挂判定（consumeSchedule 任务型 / tick 班次型）②开机
+// 首 tick 补验尸（A 面无主行断电孤儿 + B 面 fired×launches 反查）③state.watchman 台账④hearth
+// 报备客户端。拔插头纪律（验收 1）：watchman 模块缺失/抛错 → conductor 照跑——更夫死了
+// 不打更，宅子照常开灯（与 hotspot/retro 心跳同款：骨头断了肉照长）。
+const WATCHMAN_MAX_RAW = Number(process.env.CONDUCTOR_WATCHMAN_MAX ?? 3);
+const WATCHMAN_MAX = Number.isFinite(WATCHMAN_MAX_RAW) && WATCHMAN_MAX_RAW >= 1 ? Math.floor(WATCHMAN_MAX_RAW) : 3; // 停拉上限（spec ⑥ 默认 3，env 可调——突变面：上限真在读不是写死）
+const HEARTH_URL = () => process.env.HEARTH_URL ?? "http://172.26.176.1:7788"; // hearth报备地址（报备时才连，失败不拦）
+// F3 存在感事件账（docs/f3-emit-hook-spec-v0.2.md）：更夫判定/停拉转人类各发一条心跳事件——
+// 旁路（emitEvent 写失败自己吞，不拦判定不拦报备）。ORCH_EVENTS_DIR：事件目录注入位
+//（缺省 emit.mjs 的 repo 相对 data/events）。
+const EMIT_OPTS = () => (process.env.ORCH_EVENTS_DIR ? { eventsDir: process.env.ORCH_EVENTS_DIR } : {});
+const WATCHMAN_AUTOPSY = { done: false }; // 进程级旗：开机首 tick 补验尸一次（重启=新进程=再验；盘上幂等位防重报）
+
+// F2 收件箱按天清（docs/f2-inbox-ttl-spec-v0.2.1.md）：壳审批卡隔夜过期自动 deny（by=system-expired，
+// 审批人侧可查终态）。env 逃生门 CONDUCTOR_INBOX_TTL=day|24h|tiered——默认 day=方案 A 正典
+//（the user 10/18 拍板「与 Moonshake day file 同款」+ 10/19 窗口参数拍板 A）；24h/tiered 为 B/C 逃生门。
+// 非法值常驻面 fail-fast（exit 1 + 出声，别静默跑歪钟）；--once/--status 彩排面不设卡（同正典自检口径）。
+const INBOX_TTL_RAW = process.env.CONDUCTOR_INBOX_TTL;
+const INBOX_TTL_MODE = parseTtlMode(INBOX_TTL_RAW); // null=非法；缺省/空 → "day"
+
 function todayJST() {
-	return new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+	return nowJstDay(); // F2 钟屋收编：原末内联同式日钟改为 day-clock.mjs 单点（行为不变，只灭第二座钟）
 }
 
 const STATE_DIR = process.env.CONDUCTOR_STATE_DIR ?? path.join(CWD, "data", "conductor");
@@ -123,6 +163,7 @@ const PARTS_ALL = [
 			"1. 单 session 预算内闭环本轮——结尾给一段 200 字以内的收尾笔记（今天走到了哪、值得留下的一句）。",
 			"2. 播种纪律：如本轮值得开新线索，收尾下种不超过 1 条 thread，初始 w 封顶 0.5 且标 source=seed。",
 			"3. 不读、不引用、不猜测任何用户私人内容——你的视野只有这个仓库。",
+			"4. 落码未上膛（换防正典，2026-10-11 第三班种子，本班认领转正）：若本轮改了 conductor 启动期加载的码（src/conductor.mjs、src/orchestrator/*），而本 session 就活在 conductor 的 cgroup 里——restart=自杀，别裸跑别裸 restart。正典：systemd-run --unit=pianist-conductor-rearm --collect /bin/sh deploy/rearm-conductor.sh 挂清道夫等你退役后补刀（exact 姿势与判忙纪律以该脚本头注为准）。",
 		].join("\n"),
 	},
 	{
@@ -204,6 +245,27 @@ const PARTS_ALL = [
 			"纪律：只读不动账——STATUS.md 不写回、journal 不碰；跳过条不回炉不删；单 session 预算内闭环。",
 		].join("\n"),
 	},
+	{
+		id: "tideline-threads",
+		desc: "记忆线索探索（tideline threads）",
+		// 牌面由 conductor 拉起前注入（threads 参数，dualcard 交付二 2026-10-12）：本地 tideline 库
+		// threads 表按 weight 降序前 10。库/表还没长出来（null）≠ 没有 open 线索（[]）——文案分叉
+		// 照 env-event 空/降级先例（2026-10-01 六场空牌病历：不分会把「探不到」喂成「猜动作名」）。
+		prompt: (threads) => [
+			"你是 Emergence Pianist 的记忆线索分身（tideline-threads part）。tideline 的 threads 表是家里漂着的记忆线索：每条是一个没走完的头绪（weight=值得回头看的热度，unresolved=未解度）。你的任务是挑动其中值得现在动的，把探索结果留下。",
+			"",
+			"本轮牌面（conductor 预取，weight 降序前 10，含 id/权重/未解度/状态/内容摘要）：",
+			threads && threads.length
+				? threads.map((t) => `- #${t.id} w=${t.weight} 未解=${t.unresolved} [${t.status}] ${String(t.content).slice(0, 80).replace(/\n/g, " ")}`).join("\n")
+				: threads === null
+					? "（tideline 库还没长出来——conductor 预取时本地库/threads 表读不到：不是没有线索，是家当还没归位。本轮降级为空牌面确认跑：写 100 字以内的收尾笔记即可，不要自己去翻 tideline 的库或猜库的路径。）"
+					: "（threads 表可达且当前没有 open 线索——真无线可探，写 100 字以内的收尾笔记即可。）",
+			"",
+			"逐条判断：这条线索值不值得现在动——不值得的明说「这条不接」；值得动的顺着 content 的头绪在本仓内探索（读代码/读遥测/读 journal），把走到的判断写进收尾笔记。",
+			"纪律：只读不写——threads 表你只读不写（线索的增删改是 tideline 自己的界，动它是越界）；单 session 预算内闭环本轮；收尾笔记 200 字以内。",
+			"开新线走播种纪律（同 wander part）：如本轮值得开新线索，收尾下种不超过 1 条 thread，初始 w 封顶 0.5 且标 source=seed——开新线是播种不是移山。",
+		].join("\n"),
+	},
 ];
 
 const PARTS = process.env.CONDUCTOR_PARTS
@@ -282,12 +344,58 @@ function eventTable() {
 	return (raw ?? "event-queue").replace(/"/g, "");
 }
 
-// env-event 牌面预取：the-remote event-queue 里 replay_day IS NULL 的实时行（未回放消费的）。
-// 失败出声降级为空牌面（拉不到队列 ≠ 队列为空）——session 照拉，牌面标明降级原因。
-// 消费进度记在 conductor 自己的 state（last_env_event_id），不碰 event-queue（INSERT-only 界约）。
-// 队列语义（collab-issue 钉a 裁定 ASC）：每轮吃最老的 5 条，积压靠后续轮次续消——
-// 不会静默跳过任何一条；DESC+max 是快照语义，与「消费进度」的承诺不符。
-async function fetchEnvEvents(lastId) {
+// env-event 牌面预取：事件行 replay_day IS NULL 的实时行（未回放消费的）。失败出声降级为
+// 空牌面（拉不到队列 ≠ 队列为空）——session 照拉，牌面标明降级原因。消费进度记在 conductor
+// 自己的 state，不碰源库（INSERT-only 界约）。队列语义（collab-issue 钉a 裁定 ASC）：每轮吃
+// 最老的 5 条，积压靠后续轮次续消——不会静默跳过任何一条；DESC+max 是快照语义，与「消费进度」
+// 的承诺不符。
+// 血源切换（2026-10-12 dualcard 交付一）：本地感官线已建（pianist-organ-runtime 器官→
+// Moonshake eventlog→bridge→wake.db，表同形状 wake_log）——env-event 改本地优先。
+// CONDUCTOR_EVENT_SOURCE 取 local / remote / local,remote（默认 local,remote=本地优先：
+// 本地 ≥1 行直接用本地行；本地空或失败回落 remote）。本地/远端是两套行号空间→两个游标
+//（state.last_env_event_local_id 管本地行、last_env_event_id 照旧管远端行——串门会跳行/重吃）。
+// 降级纪律照旧：两条被咨询的源都拉不到才 null（拉不到≠空）；任一源健康且零行→[] 真空
+//（以活着的源为准，死源已在它那层出声——本地优先世界里 remote 只是回落，它的死不该把
+// 健康本地源的真空结论拖成降级，反之亦然）。
+// 回落不是失败：本地死顶给 remote 不算病，退避账/病名出声（remote 侧 no such table）一概不动。
+function eventSourceMode() {
+	const raw = (process.env.CONDUCTOR_EVENT_SOURCE ?? "").trim();
+	if (!raw) return { local: true, remote: true };
+	const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+	const wantLocal = parts.includes("local");
+	const wantRemote = parts.includes("remote");
+	if (!wantLocal && !wantRemote) {
+		console.warn(`[conductor] CONDUCTOR_EVENT_SOURCE="${raw}" 不认——回默认 local,remote（本地优先）`);
+		return { local: true, remote: true };
+	}
+	return { local: wantLocal, remote: wantRemote };
+}
+// 行形状归一：本地 sqlite3 -json 与远端 ssh sqlite3 -json 同列，共用一个 mapper
+function mapEventRow(r) {
+	return {
+		id: Number(r.id), thread_id: Number(r.thread_id), cosine: r.cosine,
+		signal_text: String(r.signal_text ?? ""), signal_source: r.signal_source, logged_at: r.logged_at,
+	};
+}
+// 本地源直读（dualcard 交付一）：不经 ssh——少一层引号嵌套地狱（远端那条缝见 fetchEnvEventsRemote
+// 头注），表名带横杠也无需双层转义。失败=null 出声降级；no such table 另出人话：本地感官线真
+// 表名是 wake_log，CONDUCTOR_EVENT_TABLE 与本地库对不上时指名缝在表名（与远端病名分开喊，修因不串门）。
+function fetchEnvEventsLocal(lastLocalId) {
+	const DB = process.env.CONDUCTOR_LOCAL_EVENT_DB ?? "/root/pianist-organ-runtime/wake.db";
+	const TABLE = eventTable();
+	const q = `SELECT id, thread_id, cosine, signal_text, signal_source, logged_at FROM "${TABLE}" WHERE replay_day IS NULL AND id > ${Number(lastLocalId) || 0} ORDER BY id ASC LIMIT 5`;
+	const r = spawnSync("sqlite3", ["-json", DB, q], { encoding: "utf8", timeout: 20_000 });
+	if (r.error || r.status !== 0) {
+		const msg = `${r.stderr ?? ""}`.trim() || (r.error ? r.error.message : `exit ${r.status}`);
+		console.warn(`[conductor] env-event 本地源预取失败（${DB}）——${msg}`);
+		if (/no such table/i.test(msg)) console.warn(`[conductor] 本地库无表 "${TABLE}"——本地感官线真表名 wake_log：CONDUCTOR_EVENT_TABLE 需与本地库一致（与远端部署缝分开修）`);
+		return null;
+	}
+	const parsed = (r.stdout ?? "").trim() ? JSON.parse(r.stdout) : [];
+	return (Array.isArray(parsed) ? parsed : []).map(mapEventRow);
+}
+// 远端源（旧路，行为不动）：ssh 拉 the-remote 的 event-queue。
+async function fetchEnvEventsRemote(lastId) {
 	const SSH = process.env.CONDUCTOR_SVPS_SSH ?? "the-remote";
 	const SSH_BIN = process.env.CONDUCTOR_SSH_BIN ?? "ssh"; // 测试替身：复刻双层 shell 解析的 ssh stub
 	const DB = process.env.CONDUCTOR_MEMORY_DB ?? "~/memory/mcp_memory.db"; // 测试指夹具库
@@ -315,14 +423,59 @@ async function fetchEnvEvents(lastId) {
 				resolve(null); // null=预取失败（降级）；[]=无新事件
 			} else {
 				const parsed = stdout.trim() ? JSON.parse(stdout) : [];
-				const rows = (Array.isArray(parsed) ? parsed : []).map((r) => ({
-					id: Number(r.id), thread_id: Number(r.thread_id), cosine: r.cosine,
-					signal_text: String(r.signal_text ?? ""), signal_source: r.signal_source, logged_at: r.logged_at,
-				}));
-				resolve(rows);
+				resolve((Array.isArray(parsed) ? parsed : []).map(mapEventRow));
 			}
 		});
 	});
+}
+// fetchEnvEvents 总口（dualcard 后的血源分发）：返回 {source:"local"|"remote", rows}|null——
+// source 给消费端推对的游标（两套行号空间各自续消）。本地优先语义：本地 ≥1 行直接用；本地
+// 空/失败回落 remote；两源都交不出行时，双双失败→null（拉不到≠空），否则至少一源健康报
+// 零行→[]（真无事可消费——source 仅记来路，零行不推游标）。
+async function fetchEnvEvents(lastId, lastLocalId) {
+	const mode = eventSourceMode();
+	if (mode.local && !mode.remote) {
+		const rows = fetchEnvEventsLocal(lastLocalId);
+		return rows === null ? null : { source: "local", rows };
+	}
+	if (mode.remote && !mode.local) {
+		const rows = await fetchEnvEventsRemote(lastId);
+		return rows === null ? null : { source: "remote", rows };
+	}
+	const localRows = fetchEnvEventsLocal(lastLocalId);
+	if (localRows !== null && localRows.length >= 1) {
+		console.log(`[conductor] env-event 本地源中选（${localRows.length} 条，wake.db 血源）——本地优先`);
+		return { source: "local", rows: localRows };
+	}
+	console.log(`[conductor] env-event 本地源${localRows === null ? "失败" : "无新行"}——回落 remote`);
+	const remoteRows = await fetchEnvEventsRemote(lastId);
+	if (remoteRows !== null && remoteRows.length >= 1) return { source: "remote", rows: remoteRows };
+	// 两源都交不出行：双双失败→null 降级；否则至少一源健康报零行→[] 真空（旧路 remote 空库
+	// 真空语义在此形状下保持——本地死+remote 空也是真空，本地只是回落不足为凭）。
+	if (localRows === null && remoteRows === null) return null;
+	return { source: "remote", rows: [] };
+}
+
+// tideline-threads 牌面预取（2026-10-12 dualcard 交付二）：读本地 tideline 库（默认
+// /root/pianist-tideline/data/mcp_memory.db）的 threads 表——记忆线索（没走完的头绪），
+// weight 降序前 10 进牌面。库不存在/表不存在→null 降级（「库还没长出来」≠「没有 open 线索」
+// ——文案分叉照 env-event 空/降级先例）；表在零行→[]（真无线）。LIMIT 10 钉死：一场线索探索
+// 吃得下的是十根线头，不是全库。只读不写：threads 表的增删改是 tideline 自己的界（prompt
+// 纪律段同款钉死）。
+function fetchThreadsBoard(quiet = false) {
+	const DB = process.env.CONDUCTOR_TIDELINE_DB ?? "/root/pianist-tideline/data/mcp_memory.db";
+	const q = `SELECT id, content, status, importance, unresolved, weight FROM threads ORDER BY weight DESC LIMIT 10`;
+	const r = spawnSync("sqlite3", ["-json", DB, q], { encoding: "utf8", timeout: 20_000 });
+	if (r.error || r.status !== 0) {
+		const msg = `${r.stderr ?? ""}`.trim() || (r.error ? r.error.message : `exit ${r.status}`);
+		if (!quiet) console.warn(`[conductor] tideline-threads 牌面预取失败——空牌面降级（库还没长出来≠没有 open 线索）：${msg}`);
+		return null;
+	}
+	const parsed = (r.stdout ?? "").trim() ? JSON.parse(r.stdout) : [];
+	return (Array.isArray(parsed) ? parsed : []).map((t) => ({
+		id: Number(t.id), content: String(t.content ?? ""), status: t.status,
+		importance: t.importance, unresolved: t.unresolved, weight: t.weight,
+	}));
 }
 
 // todo-review 牌面预取：本地 the-workbench workbench 各项目 STATUS.md 的「下一步」段。
@@ -531,6 +684,302 @@ async function heartbeatHotspotScan(st) {
 	return { fired: true, exit: r.code };
 }
 
+// retro 触发心跳（v2-2 接线）：消费 evaluateRetroTrigger 三源判定，fire 时拉起 retropad。
+// 判据行格式钉死：`[conductor] retro 触发判定：fire=<bool> reason=<threshold|due|hook|none> <detail>`
+// （可断言面——测试不翻源码）。报告读侧容错：缺失/坏 JSON → null=按零热点计（retro-trigger
+// 自带容错，本接缝不叠加崩）；due 源读 retropad 的状态文件（无历史=立即到期一次，给首战铺路）。
+async function heartbeatRetroFire(st) {
+	// retro 状态先读（due 源与冷却钟共用一面账——retropad 合法收工写的 lastRetroAt）。
+	let retroState = { lastRetroAt: null };
+	try { retroState = readRetroState(RETRO_STATE_FILE); } catch (e) { console.warn(`[conductor] retro 状态读坏（当无历史，due 源立即到期一次）：${e?.message ?? e}`); }
+	// 冷却闸（连环拉保护，不许省）：上次 fire 至今 < 窗 → 不再 fire（判定也跳——冷却期行为已知，不刷判定行）。
+	// 双源取新（2026-10-11 第五班：retropad 首场真弹带外发车，只写 retro/state.json——自家
+	// last_retro_fire 不知道 → 自家钟过窗后同一批弹药还能再裁一发）。自家钟保「retropad 崩溃
+	// 未落账」的连环拉保护；retroState.lastRetroAt 保「带外合法收工刚裁过」——只认自家会漏别人的账。
+	const ownFireMs = Date.parse(st.last_retro_fire?.ts ?? "");
+	const ownOk = Number.isFinite(ownFireMs);
+	const oobMs = retroState.lastRetroAt; // readRetroState 已归一为 ms（坏 JSON 走 mtime 兜底同形状）
+	const oobOk = Number.isFinite(oobMs);
+	const cooldownMs = Math.max(ownOk ? ownFireMs : 0, oobOk ? oobMs : 0);
+	if (cooldownMs > 0 && Date.now() - cooldownMs < RETRO_COOLDOWN_MS) {
+		const clock = ownOk && ownFireMs >= (oobOk ? oobMs : 0)
+			? `自家 ${st.last_retro_fire.ts}（reason=${st.last_retro_fire.reason}）`
+			: `带外 ${new Date(cooldownMs).toISOString()}（retropad 落账）`;
+		console.log(`[conductor] retro 心跳冷却中：上次 fire ${clock}——窗 ${Math.round(RETRO_COOLDOWN_MS / 3600000)}h 内不再拉（连环拉保护）`);
+		return { fired: false, why: "cooldown" };
+	}
+	let report = null;
+	try { report = JSON.parse(fs.readFileSync(HOTSPOT_OUT, "utf8")); } catch { /* 缺失/坏 JSON → 零热点面（due/钩子源照判，判定不炸） */ }
+	const trig = evaluateRetroTrigger({ report, lastRetroAt: retroState.lastRetroAt });
+	console.log(`[conductor] retro 触发判定：fire=${trig.fire} reason=${trig.reason} ${trig.detail}`);
+	if (!trig.fire) return { fired: false, why: "none" };
+	if (DRY) {
+		console.log(`[conductor] [dry-run] retro 心跳将拉起（reason=${trig.reason}）：node ${path.relative(CWD, RETROPAD_BIN)} --report ${HOTSPOT_OUT} --state ${RETRO_STATE_FILE}（不带 --force：retropad 内部幂等复判）`);
+		return { fired: false, why: "dry" };
+	}
+	console.log(`[conductor] retro 心跳：判定 fire（reason=${trig.reason}）→ retropad 上膛（不带 --force：内部幂等复判，双保险；纯机械判定零 LLM，不记抽卡账）`);
+	const t0 = Date.now();
+	const r = await new Promise((resolve) => {
+		// conductor 同款 node 直跑 .mjs（版本错位结构性排除——19连抽钉子钉儿子，同款钉法）
+		const c = spawn(process.execPath, [RETROPAD_BIN, "--report", HOTSPOT_OUT, "--state", RETRO_STATE_FILE], {
+			cwd: CWD, stdio: ["ignore", "pipe", "pipe"],
+		});
+		let tail = "";
+		c.stdout.on("data", (d) => { tail += d.toString(); });
+		c.stderr.on("data", (d) => { tail += d.toString(); });
+		c.on("error", (e) => resolve({ code: -1, tail: String(e?.message ?? e) }));
+		c.on("close", (code) => resolve({ code, tail }));
+	});
+	st.last_retro_fire = {
+		ts: new Date().toISOString(), reason: trig.reason, detail: trig.detail, exit: r.code, ms: Date.now() - t0,
+	};
+	if (r.code !== 0) {
+		console.warn(`[conductor] retro 心跳失败 exit=${r.code}——冷却窗 ${Math.round(RETRO_COOLDOWN_MS / 3600000)}h 后再战（成败同窗，不刷屏重试）。尾 300 字：\n${r.tail.slice(-300)}`);
+	} else {
+		console.log(`[conductor] retro 心跳收工：exit=0（${st.last_retro_fire.ms}ms，reason=${trig.reason}）——复盘分身的记账走 retropad/buildRuntime 自己的路线，conductor 不代管`);
+	}
+	saveState(st);
+	return { fired: true, exit: r.code };
+}
+
+// ---- 更夫接线（F1，2026-10-18 f1-watchman 单）：死前死后的拉起决策 ----
+// 模块动态 import（拔插头验收 1）：src/watchman.mjs 缺失/抛错 → conductor 照跑，重拉决策
+// 静默缺席（只出一声 warn）。静态 import 会在启动期直接炸——与「更夫是确定层最小组件、更夫
+// 死了宅子照常开灯」的定位相反。CONDUCTOR_WATCHMAN_MODULE：测试/演练换桩（同 CONDUCTOR_PI_BIN 位）。
+let WATCHMAN_MOD; // undefined=没试过 / null=拔了 / module=在——进程内只试一次，不每 tick 重探
+async function loadWatchmanMod() {
+	if (WATCHMAN_MOD !== undefined) return WATCHMAN_MOD;
+	try {
+		WATCHMAN_MOD = process.env.CONDUCTOR_WATCHMAN_MODULE
+			? await import(pathToFileURL(path.resolve(CWD, process.env.CONDUCTOR_WATCHMAN_MODULE)).href)
+			: await import("./watchman.mjs");
+	} catch (e) {
+		WATCHMAN_MOD = null;
+		console.warn(`[conductor] 更夫模块不可用（拔插头：照跑不拦，重拉决策静默缺席）：${e?.message ?? e}`);
+	}
+	return WATCHMAN_MOD;
+}
+
+// hearth报备客户端（F1 缘②/spike ⑥）：POST /api/send 大厅，sender=conductor，fetch 超时 5s。
+// 失败不拦判定不拦抽卡（spike ⑥ 同款纪律：报备到不到人，账都在盘上）。地址 env HEARTH_URL
+// 注入（缺省私有部署hearth）——测试/演练指本地 stub server，不许真打真hearth。
+async function hearthSend(text, { url = HEARTH_URL(), timeoutMs = 5000 } = {}) {
+	const ctl = new AbortController();
+	const timer = setTimeout(() => ctl.abort(), timeoutMs);
+	try {
+		const res = await fetch(`${url.replace(/\/$/, "")}/api/send`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ room: "大厅", sender: "conductor", text }),
+			signal: ctl.signal,
+		});
+		if (!res.ok) console.warn(`[conductor] hearth报备非 2xx（${res.status}）——不拦路`);
+		return true;
+	} catch (e) {
+		console.warn(`[conductor] hearth报备失败（${e?.message ?? e}）——不拦判定不拦抽卡`);
+		return false;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+// 停拉转人类（spike ⑥）：hearth报备一条 + spoor journal 落「待审·人」（带死因分类+重拉史+
+// 建议动作栏）——不自动做别的。判断只剩最后一公里，这一公里归人。spoor 落账=直接追加
+// workbench journal 文件（与 session-spoor workbench_journal 同文件同形状：- **[待审·人]**
+// (conductor) HH:MM 文本）——不走 MCP 少一层部署缝；锁粒度从简（stop-human 是罕见事件，
+// 与 python 侧 read→拼→写重写的竞争窗口极窄，且报备失败不拦——hearth 是主通道，盘上账都在）。
+async function watchmanEscalateHuman(st, { schedId, part, deadRow, reason, attempt }) {
+	const led = st.watchman?.relaunches?.[schedId];
+	const text = [
+		`[conductor 更夫·停拉转人类] schedule #${schedId}（part=${part ?? "?"}）已触顶停拉：${reason}`,
+		`死因分类：${deadRow?.signal ? `signal=${deadRow.signal}` : `exit=${deadRow?.exit ?? "?"}`}；最后拉起 ${deadRow?.ts ?? "?"}${Number.isFinite(deadRow?.ms) ? `，运行 ${deadRow.ms}ms` : ""}。`,
+		`重拉史（24h 窗）：attempt=${led?.count ?? 0}/${WATCHMAN_MAX}，heal=${led?.healCount ?? 0}；最近死因：${(led?.history ?? []).slice(-3).map((h) => (h.signal ? `signal=${h.signal}` : `exit=${h.exit}`)).join("；") || "（无）"}。`,
+		`建议动作：人对一眼会话原文与工件再定补跑/改书/放弃（A3 spool 语义：工件未清，接着干不从头来）。`,
+	].join("\n");
+	console.log(`[conductor] 更夫停拉转人类：sched #${schedId} attempt=${attempt}/${WATCHMAN_MAX}——hearth报备 + spoor 待审·人（不自动做别的）`);
+	emitEvent("escalation.human", { schedId, part: part?.id ?? part ?? null, reason, attempt }, EMIT_OPTS()); // F3 心跳：非hearth听者也听得见停拉
+	await hearthSend(text);
+	try {
+		const root = process.env.CONDUCTOR_STIGMERGY_ROOT ?? path.resolve(CWD, "..", "Stigmergy");
+		const day = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10); // 本地日（与 journal 文件名同钟）
+		const jf = path.join(root, "workbench", "portalk", "journal", `${day}.md`);
+		fs.mkdirSync(path.dirname(jf), { recursive: true });
+		const head = fs.existsSync(jf) ? "" : `# ${day}\n`;
+		const hhmm = new Date().toTimeString().slice(0, 5);
+		fs.appendFileSync(jf, `${head}- **[待审·人]** (conductor) ${hhmm} ${text.replace(/\n/g, " ")}\n`);
+		console.log(`[conductor] 更夫停拉转人类：spoor 待审·人已落 ${path.relative(CWD, jf)}`);
+	} catch (e) {
+		console.warn(`[conductor] spoor 待审·人落账失败（不拦）：${e?.message ?? e}`);
+	}
+}
+
+// 任务型死状处理（两缝共用：在线死亡分支 + 首 tick 验尸 A 面）：判定→记账→按 verdict 动手。
+// relaunch/heal：先写后做（spike ⑤：spawn 前落新 launch 行带 relaunch_of 链——账上可追「这次
+// 是替谁跑的」）再 launchPart；重拉又死继续判（链式，台账每次 +1，触顶自然停）。schedule 状态
+// 机不碰：entry.status 保持 fired（评估器不认终态的既有语义不动），重拉与否全看更夫账（spike ④）。
+async function watchmanHandleTaskDeath(st, { deadRow, part, schedId, buildPrompt, preJudged }) {
+	const w = await loadWatchmanMod();
+	if (!w) return;
+	st.launches ??= []; // 坏形状 state（无 launches 字段）也不炸——补拉要先落行
+	let carry = preJudged; // 验尸面已判过的 verdict 直传——同一行只出一行判定账，不双判
+	for (;;) {
+		const prior = st.watchman?.relaunches?.[schedId];
+		const v = carry ?? w.evaluateWatchman({ deadLaunch: deadRow, prior, isTaskLike: true, max: WATCHMAN_MAX, now: Date.now });
+		carry = undefined;
+		console.log(w.watchmanJudgeLine({ sched: schedId, verdict: v.verdict, reason: v.reason, attempt: v.attempt, max: WATCHMAN_MAX }));
+		emitEvent("watchman.judged", { task: `sched:${schedId}`, schedId, verdict: v.verdict, reason: v.reason, attempt: v.attempt, max: WATCHMAN_MAX }, EMIT_OPTS()); // F3 心跳：emit 面不改判定行
+		st.watchman ??= {};
+		st.watchman.relaunches ??= {};
+		st.watchman.relaunches[schedId] = w.recordWatchmanDeath(prior, deadRow, v.verdict, Date.now());
+		saveState(st);
+		if (v.verdict !== "relaunch" && v.verdict !== "heal") {
+			if (v.verdict === "stop-human") await watchmanEscalateHuman(st, { schedId, part: part?.id ?? part, deadRow, reason: v.reason, attempt: v.attempt });
+			return; // done/log-only/stop-human：出声即止
+		}
+		const ranMs = Number.isFinite(Date.parse(deadRow.ts)) ? Date.now() - Date.parse(deadRow.ts) : null;
+		const nth = v.verdict === "heal" ? st.watchman.relaunches[schedId].healCount : v.attempt;
+		const prompt = w.watchmanRelaunchPrefix({ nth, kind: v.verdict, deadLaunch: { ...deadRow, ms: ranMs } })
+			+ "\n\n" + buildPrompt();
+		// 先写后做：spawn 前落新 launch 行（relaunch_of 链回指原行 ts）——重拉也死也留名
+		const newRow = { day: todayJST(), part: part.id, sched: schedId, ts: new Date().toISOString(), relaunch_of: deadRow.ts };
+		st.launches.push(newRow);
+		if (st.launches.length > 200) st.launches.shift();
+		saveState(st);
+		console.log(`[conductor] 更夫${v.verdict === "heal" ? "补拉（环境死，attempt 不计）" : "重拉"}：sched #${schedId} → 新 launch 行已入账（relaunch_of=${deadRow.ts}），带三件套前缀拉起`);
+		const r = await launchPart({ ...part, prompt }, (pid) => { newRow.pid = pid; saveState(st); });
+		if (r.signal) newRow.signal = r.signal;
+		newRow.exit = r.signal ? null : r.code;
+		if (r.signal || r.code !== 0) newRow.tail = r.tail; // 死行带尾（三件套下轮用）
+		saveState(st);
+		if (r.signal) console.error(`[conductor] 更夫重拉 sched #${schedId} 死于信号 ${r.signal}——继续判（尾 300 字）：\n${r.tail.slice(-300)}`);
+		else if (r.code !== 0) console.error(`[conductor] 更夫重拉 sched #${schedId} 非零退出 ${r.code}——继续判（尾 300 字）：\n${r.tail.slice(-300)}`);
+		else { console.log(`[conductor] 更夫重拉收工：sched #${schedId} exit=0（relaunch_of=${deadRow.ts} 链闭环）`); return; }
+		deadRow = { ...newRow }; // 链式：重拉的又死了 → 下一轮判定吃新行（同 sched 同台账）
+	}
+}
+
+// 班次型死状（抽卡行，spike ②）：判定行照出，log-only 不拉不计数——下轮 tick 自然再抽＝既有
+// 正确行为，更夫只补一行判定账。不进台账不报备（日常运转不是承诺）。
+async function watchmanNoteShiftDeath({ deadRow, partId }) {
+	const w = await loadWatchmanMod();
+	if (!w) return;
+	const v = w.evaluateWatchman({ deadLaunch: deadRow, prior: undefined, isTaskLike: false, max: WATCHMAN_MAX, now: Date.now });
+	console.log(w.watchmanJudgeLine({ part: partId, verdict: v.verdict, reason: v.reason, attempt: v.attempt, max: WATCHMAN_MAX }));
+	emitEvent("watchman.judged", { task: `part:${partId}`, partId, verdict: v.verdict, reason: v.reason, attempt: v.attempt, max: WATCHMAN_MAX }, EMIT_OPTS()); // F3 心跳：emit 面不改判定行
+}
+
+// 开机首 tick 补验尸（spike ⑤ + ①-补 缝①双面）：
+//   A 面（无主行）：launches 里「无 exit 无 signal」的 pending 行（断电孤儿——10/17 v4-3 那类
+//   从「连账都没有」变「开机 5 分钟内有人对账」）+ signal=parent-down 补账行（SIGTERM 钩子落
+//   的环境死，同样没人收尾）——两类都是环境死，机械判：任务型 heal、班次型出声即止。进程
+//   在探针（/proc/<pid>）：conductor 死后 child 可能被 init 收养还活着——活着的不算死，诚实跳过。
+//   验过的行落 autopsy 位（幂等：同一行不二次验，重启不重判）。
+//   B 面（fired-无行缝，hui #1055 开工条件①）：schedule entries 里 status=fired 的条目 × launches
+//   窗口反查（行匹配 sched===entry.id）——无行命中即缝（标完 fired、spawn 前断电，或行被 200
+//   行窗口挤出）。它没有行可扫，pending 行扫描永远看不见它，反查才见。双护栏（spike ①-补）：
+//   fired_at 距今 >24h 静默忽略（老行早被挤出窗，无护栏反查会把全部历史 fired 当缝报一遍=
+//   假阳洪水）；seamShouted 24h 窗幂等（重启不重报）。缝的 verdict 照旧 log-only 不自动补
+//   （launches 无行不能证明没跑过，自动补有重复跑风险）——但任务型落缝升档hearth报备（缘②）。
+// 异常自己吞不拦抽卡（与 hotspot/retro 心跳同款纪律：骨头断了肉照长）。
+async function watchmanFirstTickAutopsy(st) {
+	const w = await loadWatchmanMod();
+	if (!w) return;
+	// A 面：无主行验尸
+	for (const l of st.launches ?? []) {
+		const pending = l.exit === undefined && l.signal === undefined;
+		const parentDown = l.signal === "parent-down";
+		if ((!pending && !parentDown) || l.autopsy) continue;
+		if (typeof l.pid === "number" && l.pid > 0 && fs.existsSync(`/proc/${l.pid}`)) continue; // 还在跑——诚实跳过
+		const isTask = l.sched !== undefined && l.sched !== null;
+		if (DRY) { console.log(`[conductor] [dry-run] 更夫验尸将判无主行 ${isTask ? `sched:${l.sched}` : `part:${l.part ?? "?"}`}（彩排不写不拉）`); continue; }
+		const prior = isTask ? st.watchman?.relaunches?.[l.sched] : undefined;
+		const v = w.evaluateWatchman({ deadLaunch: l, prior, isTaskLike: isTask, max: WATCHMAN_MAX, now: Date.now });
+		l.autopsy = new Date().toISOString(); // 幂等位：验过不再验
+		if (!isTask || (v.verdict !== "heal" && v.verdict !== "relaunch")) {
+			// 班次型：出声即止（下轮 tick 自然再抽）；任务型触顶/隔夜：判定行 + 停拉转人类
+			//（不走 handleTaskDeath——那路是补拉路，判定行在这出，一行只出一道账）
+			console.log(w.watchmanJudgeLine({ sched: isTask ? l.sched : undefined, part: l.part, verdict: v.verdict, reason: v.reason, attempt: v.attempt, max: WATCHMAN_MAX }));
+			saveState(st);
+			if (isTask && v.verdict === "stop-human") await watchmanEscalateHuman(st, { schedId: l.sched, part: l.part, deadRow: l, reason: v.reason, attempt: v.attempt });
+			continue;
+		}
+		saveState(st);
+		// 任务型 heal/relaunch：判定行/台账/补拉全走 handleTaskDeath（preJudged 直传——同一行
+		// 只出一行判定账，不双判）
+		{
+			const part = PARTS_ALL.find((p) => p.id === l.part);
+			if (!part) { console.warn(`[conductor] 更夫验尸：无主行 part=${l.part} 不在牌池——只记验尸位不补拉`); continue; }
+			const entry = (readSchedule(SCHEDULE_FILE_PATH()).entries ?? []).find((e) => e?.id === l.sched);
+			await watchmanHandleTaskDeath(st, {
+				deadRow: l, part, schedId: l.sched, preJudged: v,
+				buildPrompt: () => (typeof part.prompt === "function" ? part.prompt(entry?.params) : part.prompt),
+				});
+		}
+	}
+	// B 面：fired × launches 反查（缝①）
+	const sched = readSchedule(SCHEDULE_FILE_PATH());
+	for (const entry of sched.entries ?? []) {
+		if (entry?.status !== "fired") continue;
+		if ((st.launches ?? []).some((l) => l.sched === entry.id)) continue; // 有行——账在，不进本缝
+		const firedMs = Date.parse(entry.fired_at ?? "");
+		if (!Number.isFinite(firedMs) || Date.now() - firedMs > w.WATCHMAN_WINDOW_MS) continue; // >24h 静默忽略（假阳洪水防护，spike ①-补）；fired_at 缺失=证不了新鲜，同护栏
+		st.watchman ??= {};
+		st.watchman.seamShouted ??= {};
+		const last = st.watchman.seamShouted[entry.id];
+		if (last && Date.now() - Date.parse(last) < w.WATCHMAN_WINDOW_MS) continue; // 24h 窗内已报过（重启不重报）
+		if (DRY) { console.log(`[conductor] [dry-run] 更夫验尸将报 fired-无行缝 #${entry.id}（彩排不写不报）`); continue; }
+		console.log(w.watchmanJudgeLine({
+			sched: entry.id, part: entry.part, verdict: "log-only", attempt: 0, max: WATCHMAN_MAX,
+			reason: "fired-无行缝（标完 fired、spawn 前断电/行被窗口挤出）——launches 无行不能证明没跑过，不自动补",
+		}));
+		st.watchman.seamShouted[entry.id] = new Date().toISOString(); // 报备前先记名：报备失败也不重报（防洪水问一句就够）
+		saveState(st);
+		// 缘②升档：过了确认线的任务落缝，console 行太轻——hearth报备一条（讣告同款形状），失败不拦
+		await hearthSend(`[conductor 更夫·fired-无行缝] schedule #${entry.id}（part=${entry.part ?? "?"}）标完 fired 但 launches 无对应行——死因=fired-无行缝（标完 fired、spawn 前断电，或行被 200 行窗口挤出）。fired_at=${entry.fired_at}。launches 无行不能证明没跑过，请人对一眼再定补不补。`);
+	}
+}
+
+// ---- F2 收件箱按天清钩子（「开机对账」家族，watchman 验尸同族；只住常驻面）----
+// 每天首 tick（进程级日旗：开机首跑 + 日界翻篇再跑）打壳 POST /approvals/sweep——过期 pending
+// 审批卡自动转 denied（by=system-expired，壳侧 decide 同形状同审计），清了东西出记账行
+//（spec 实现面 4：清了几条、逐条 id+类型——审批单号）。为什么不在 tick() 里挂：--once 是彩排/
+// 测试面（大量测试直跑 --once），不能让它对真壳产生真实 deny 副作用——与验收 5「env fail-fast
+// 在常驻面」同口径，清理钩子也住常驻面。runtime inbox 的按天清在 orchestrator 自己的 tick
+//（runtime.mjs startLoop）——conductor 够不到各 dispatch 进程的内存收件箱，两边各扫各的。
+// 帷幕线（spec 语义 3）：本钩子只调壳 sweep，不 spawn 不重派不碰更夫账。壳不可达=旁路：
+// 不拦 tick，5min 重试冷却（不刷屏也不静默），壳回来了当天补扫。
+const INBOX_TTL_SWEEP = { day: null, retryAfterMs: 0 };
+async function inboxTtlDailySweep() {
+	const today = nowJstDay();
+	if (INBOX_TTL_SWEEP.day === today) return { swept: [], why: "already" };
+	if (Date.now() < INBOX_TTL_SWEEP.retryAfterMs) return { swept: [], why: "retry-cooldown" };
+	const mode = INBOX_TTL_MODE ?? "day"; // 彩排面非法值已回 day；常驻面非法值进不来（fail-fast）
+	if (DRY) {
+		console.log(`[conductor] [dry-run] 收件箱按天清将打壳 ${SHELL_URL}/approvals/sweep（mode=${mode}）——彩排不扫不记账`);
+		INBOX_TTL_SWEEP.day = today;
+		return { swept: [], why: "dry" };
+	}
+	try {
+		const res = await fetch(`${SHELL_URL}/approvals/sweep`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ mode }),
+			signal: AbortSignal.timeout(5000),
+		});
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const out = await res.json();
+		INBOX_TTL_SWEEP.day = today;
+		INBOX_TTL_SWEEP.retryAfterMs = 0;
+		const swept = Array.isArray(out?.swept) ? out.swept : [];
+		if (swept.length) console.log(sweepAccountLine("[conductor]", swept));
+		return { swept, why: "ok" };
+	} catch (e) {
+		INBOX_TTL_SWEEP.retryAfterMs = Date.now() + 5 * 60_000;
+		console.warn(`[conductor] 收件箱按天清够不着壳（${SHELL_URL}/approvals/sweep）——5min 后重试（不拦 tick，别静默）: ${e?.message ?? e}`);
+		return { swept: [], why: "shell-unreachable" };
+	}
+}
+
 function launchPart(part, onSpawn) {
 	return new Promise((resolve) => {
 		const env = {
@@ -565,6 +1014,120 @@ function launchPart(part, onSpawn) {
 	});
 }
 
+// ---- schedule 消费缝（骨头层，2026-10-12 schedule-bone 施工）----
+// spec 权威：docs/schedule-spec-v0.1.md（六条拍板）。卡池是肉（闲时随机填充），schedule 是骨头
+//（agent 对自己一天的确定性安排）——本缝是骨头的消费位，评估器纯函数在 src/schedule/evaluator.mjs，
+// 存储在 src/schedule/store.mjs。拍板落位：①非 cron，走 conductor 日程表（预算/遥测/审批全走
+// 既有闸——本缝在预算硬停与忙判之后，抽卡之前）②预算优先级：schedule 先吃——due 条目本 tick
+// 直接顶掉抽卡（一 tick 一场，同抽卡节奏），余额留给下一轮 ③权限三档默认 always-ask，生效前走
+// ACTION_RISK 分流（evaluator 内复用 queue-core classify，单一事实源）④活动窗 env+文件双通道
+//（默认北京 10:00-22:00，agent 自适应是后续活本期只留通道）⑤粒度复合带参数（params 原样透传
+// 给 part 的牌面构造）⑥错过=跳过不补跑（LAST 时窗已过→status=skipped 落盘，没有补跑队列）。
+// 异常自己吞不拦抽卡——骨头断了肉照长（与 hotspot/retro 心跳同款纪律）。
+const SCHEDULE_FILE_PATH = () => process.env.CONDUCTOR_SCHEDULE_FILE ?? path.join(CWD, "data", "schedule", "schedule.json");
+const ACTIVE_HOURS_FILE_PATH = () => process.env.CONDUCTOR_ACTIVE_HOURS_FILE ?? path.join(CWD, "data", "schedule", "active-hours.json");
+async function consumeSchedule(st, day, today) {
+	const file = SCHEDULE_FILE_PATH();
+	const sched = readSchedule(file);
+	const fileHours = readActiveHoursFile(ACTIVE_HOURS_FILE_PATH());
+	const v = evaluateSchedule({
+		schedule: sched,
+		envTier: process.env.CONDUCTOR_SCHEDULE_PERMISSION,
+		envHours: process.env.CONDUCTOR_ACTIVE_HOURS,
+		fileHours,
+	});
+	const aw = v.activeWindow;
+	console.log(`[conductor] schedule 判定：due=${v.due.length} skipped=${v.skipped.length} held=${v.held.length} waiting=${v.waiting} terminal=${v.ignored.terminal}（条目 ${sched.entries.length} 张，活动窗 ${aw.start}-${aw.end}@北京 src=${aw.source}${aw.inWindow ? "" : "·窗外"}${aw.invalid.length ? `（${aw.invalid.join("/")}通道值非法已忽略）` : ""}）`);
+	// 错过跳过（§五3）：LAST 时窗已过 → status=skipped 持久化——不排队不补跑（cron 同族语义：
+	// 机器没开就是没开）。dry-run 只彩排不落盘。
+	if (v.skipped.length) {
+		const ids = v.skipped.map((s) => `#${s.entry.id}`).join(",");
+		if (DRY) {
+			console.log(`[conductor] [dry-run] schedule 错过跳过将落：${ids}（时窗已过，不补跑不排队——cron 同族语义）`);
+		} else {
+			const at = new Date().toISOString();
+			for (const s of v.skipped) { s.entry.status = "skipped"; s.entry.skipped_at = at; }
+			writeSchedule(file, sched);
+			console.log(`[conductor] schedule 错过跳过：${ids}（时窗已过，不补跑不排队——cron 同族语义）`);
+		}
+	}
+	// 被闸拦的窗口命中条目：一行汇总出声（pending-approval=等人批 / red-pending=危险操作挂审批 /
+	// outside-active-hours=等活动时段）。被拦的骨头不顶掉抽卡——肉照长。
+	if (v.held.length) {
+		console.log(`[conductor] schedule 窗口命中但被闸拦 ${v.held.length} 条：${v.held.map((h) => `#${h.entry.id}(${h.why})`).join(" ")}`);
+	}
+	if (v.ignored.invalid.length) {
+		console.warn(`[conductor] schedule 坏形状条目 ${v.ignored.invalid.length} 条（跳过不消费）：${v.ignored.invalid.map((i) => `#${i.id ?? "?"}(${i.why})`).join(" ")}`);
+	}
+	if (!v.due.length) return null;
+	// 一 tick 一场（同抽卡节奏）：due 按 window.start 升序先吃最早窗，多条同燃靠后续 tick 续消。
+	const hit = v.due[0];
+	const entry = hit.entry;
+	const part = PARTS_ALL.find((p) => p.id === entry.part);
+	if (!part) {
+		console.warn(`[conductor] schedule 条目 #${entry.id} part="${entry.part}" 不在牌池（五张：${PARTS_ALL.map((p) => p.id).join("/")}）——标 failed 不重试（part 取值域=牌池）`);
+		if (!DRY) {
+			entry.status = "failed";
+			entry.fail_reason = `part 不在牌池:${entry.part}`;
+			writeSchedule(file, sched);
+		}
+		return null; // 骨头废了不拦肉——抽卡照走
+	}
+	// params 透传（§四拍板⑤）：part 的牌面是函数则吃 entry.params（形状契约跟着各 part 的牌面走：
+	// 如 tideline-threads 吃 threads 数组、env-event 吃 events 数组），字符串牌面原样用。
+	const prompt = typeof part.prompt === "function" ? part.prompt(entry.params) : part.prompt;
+	const tierNote = hit.tier === "always-ask" ? "（always-ask·已审批生效）" : hit.tier === "auto-safe" ? `（auto-safe·risk=${hit.risk}）` : "（no-ask）";
+	console.log(`[conductor] schedule 到点：#${entry.id} ${entry.window.start} ~ ${entry.window.end} → ${part.id}${tierNote} intent=${JSON.stringify(entry.intent ?? null)}（骨头先吃：本 tick 顶掉抽卡，余额下轮再看）`);
+	if (DRY) {
+		console.log(`[conductor] [dry-run] schedule 将拉起 ${part.id}（prompt ${String(prompt).length} 字，params=${JSON.stringify(entry.params ?? null)}），不记账不落 status`);
+		return { acted: false, why: "dry-schedule" };
+	}
+	// 消费落账：launch 先写后做（同抽卡路径，行带 sched=<条目id>）；status=fired 在 spawn 前落盘
+	//（错过/重复消费由盘上状态挡——评估器不认终态）。预算/遥测/审批全走既有闸（单一入口①）。
+	const launchRow = { day: today, part: part.id, sched: entry.id, ts: new Date().toISOString() };
+	day.sched_fires = (day.sched_fires ?? 0) + 1;
+	st.days[today] = day;
+	st.launches.push(launchRow);
+	if (st.launches.length > 200) st.launches.shift();
+	saveState(st);
+	entry.status = "fired";
+	entry.fired_at = launchRow.ts;
+	writeSchedule(file, sched);
+	console.log(`[conductor] 拉起 schedule #${entry.id} → ${part.id} ...（launch 先写后做：pending 行已入账，status=fired 已落盘）`);
+	const t0 = Date.now();
+	const r = await launchPart({ ...part, prompt }, (pid) => {
+		launchRow.pid = pid;
+		saveState(st);
+	});
+	if (r.signal) launchRow.signal = r.signal;
+	launchRow.exit = r.signal ? null : r.code;
+	if (r.signal || r.code !== 0) launchRow.tail = r.tail; // 死行带尾（≤500 字）——更夫三件套的死因面（spike ③）
+	st.last_schedule_fire = { ts: launchRow.ts, id: entry.id, part: part.id, exit: r.signal ? null : r.code, signal: r.signal ?? null, ms: Date.now() - t0 };
+	saveState(st);
+	if (r.signal) {
+		console.error(`[conductor] schedule #${entry.id} ${part.id} 死于信号 ${r.signal}——死因已入账（launch 行 signal 字段），尾 300 字：`);
+		console.error(r.tail.slice(-300));
+	} else if (r.code !== 0) {
+		console.error(`[conductor] schedule #${entry.id} ${part.id} 非零退出 ${r.code}——尾 300 字：`);
+		console.error(r.tail.slice(-300));
+	} else {
+		console.log(`[conductor] schedule #${entry.id} ${part.id} 收工 exit=0（launch 行已回填，status=fired 在盘）`);
+	}
+	// 更夫判定（F1，spike ⑤）：任务型死状 → 机械判定拉不拉（exit=0 干完死不进——永不重拉）。
+	// relaunch/heal 先写后做再拉；stop-human hearth报备+spoor 待审·人。异常自己吞不拦收工路径
+	//（拔插头纪律：更夫死了 schedule 照跑）。
+	if (r.signal || r.code !== 0) {
+		try {
+			await watchmanHandleTaskDeath(st, {
+				deadRow: { ...launchRow, ms: Date.now() - t0 },
+				part, schedId: entry.id,
+				buildPrompt: () => (typeof part.prompt === "function" ? part.prompt(entry.params) : part.prompt),
+			});
+		} catch (e) { console.warn(`[conductor] 更夫判定异常（不拦收工路径）：${e?.message ?? e}`); }
+	}
+	return { acted: true, why: "schedule", part: part.id, sched: entry.id, exit: r.code, signal: r.signal ?? null };
+}
+
 async function tick() {
 	const st = loadState();
 	const today = todayJST();
@@ -573,6 +1136,18 @@ async function tick() {
 	// hotspot 心跳在一切早退之前（预算硬停/忙判/冷却都不拦它）：心跳不属抽卡账，预算死日
 	// 也不许发现闭环瞎掉；扫描器失败自己挂冷却，不碰下面的抽卡路径。
 	try { await heartbeatHotspotScan(st); } catch (e) { console.warn(`[conductor] hotspot 心跳异常（不拦抽卡）：${e?.message ?? e}`); }
+	// retro 触发心跳紧跟 hotspot 扫描收工之后（同一 tick：扫描落新报告 → 立刻判 retro；due 源不
+	// 依赖报告新鲜度，每 tick 照判）。同款口径：在预算硬停/忙判早退之前（发现闭环不属抽卡账），
+	// 异常自己吞不拦抽卡——与 hotspot 心跳一致的节奏。
+	try { await heartbeatRetroFire(st); } catch (e) { console.warn(`[conductor] retro 心跳异常（不拦抽卡）：${e?.message ?? e}`); }
+
+	// 更夫开机首 tick 补验尸（F1）：A 面无主行（断电孤儿/parent-down 补账行）+ B 面 fired×launches
+	// 反查。在预算硬停/忙判早退之前（验尸不属抽卡账，与心跳同口径）；进程级只跑一次，异常
+	// 自己吞不拦抽卡（骨头断了肉照长）。
+	if (!WATCHMAN_AUTOPSY.done) {
+		WATCHMAN_AUTOPSY.done = true;
+		try { await watchmanFirstTickAutopsy(st); } catch (e) { console.warn(`[conductor] 更夫验尸异常（不拦抽卡）：${e?.message ?? e}`); }
+	}
 
 	const { spend, n } = dailySpendYen();
 	day.spend = spend;
@@ -592,6 +1167,13 @@ async function tick() {
 		if (!DRY) { st.days[today] = day; saveState(st); }
 		return { acted: false, why: "busy" };
 	}
+
+	// schedule 消费（骨头层）：在忙判之后（冲突消解沿用现有 idle 判定——spec §六开放问题不预答）、
+	// drawPart 抽卡之前（预算优先级②：骨头先吃，余额才给抽卡）。due 即本 tick 顶掉抽卡拉起。
+	try {
+		const sr = await consumeSchedule(st, day, today);
+		if (sr) return sr;
+	} catch (e) { console.warn(`[conductor] schedule 消费异常（不拦抽卡）：${e?.message ?? e}`); }
 
 	// env-event 饿死退避（2026-09-29 wander，09-28 深夜三连红验尸）：预取连续硬失败达阈值 →
 	// 当日(JST)停抽该 part。空牌确认跑不因重试而愈——每个空闲窗烧一场只为说「拉不到」，恢复靠修因。
@@ -634,11 +1216,15 @@ async function tick() {
 	const part = drawPart(pool);
 	day.draws += 1;
 
-	// env-event：拉起前预取牌面（失败降级空牌面，session 照拉）
+	// env-event：拉起前预取牌面（失败降级空牌面，session 照拉）。dualcard 双游标：本地行/远端行
+	// 各拿各的游标进预取，回来时 source 指明本轮行来自哪个源——推游标用（两套行号空间独立）。
 	let prompt = part.prompt;
 	let events = null;
+	let eventSource = null;
 	if (part.id === "env-event") {
-		events = await fetchEnvEvents(st.last_env_event_id ?? 0);
+		const evr = await fetchEnvEvents(st.last_env_event_id ?? 0, st.last_env_event_local_id ?? 0);
+		events = evr === null ? null : evr.rows;
+		eventSource = evr === null ? null : evr.source;
 		prompt = part.prompt(events);
 		// 预取硬失败计数：连续 N 次→当日退避（阈值起效的那场照跑——已经拉了；停的是之后的抽）。
 		// 次日 backoff_day 过期自然重探——报警声每日复发，不静默永停。
@@ -669,18 +1255,31 @@ async function tick() {
 		spoorFaceHash = board === null ? null : faceHashBoard(board); // 落进 launch 行：下场同牌面对指纹用
 		prompt = part.prompt(board, spoor);
 	}
+	// tideline-threads：拉起前预取本地 tideline 库 threads 牌面（失败降级空牌面，session 照拉）。
+	// 抽中才预取——不进本轮的牌不白拉库（与 env-event 同款注入链：prompt 函数接参数进牌面）。
+	let threads = undefined;
+	if (part.id === "tideline-threads") {
+		threads = fetchThreadsBoard();
+		prompt = part.prompt(threads);
+	}
 	// 抽卡出声：牌面摘要一行（各 part 自己的形状）
 	let note = "";
-	if (part.id === "env-event") note = `，牌面 ${events === null ? "预取失败降级" : events.length + " 条"}（>${st.last_env_event_id ?? 0}）`;
+	if (part.id === "env-event") {
+		// 双游标（dualcard）：牌面行照旧出「>游标」，本地行走本地游标、远端行走远端游标——形状
+		// 不变（既有 env-event 测试断言「牌面 N 条（>N）」原样咬得住），进度各看各的。
+		const cur = eventSource === "local" ? (st.last_env_event_local_id ?? 0) : (st.last_env_event_id ?? 0);
+		note = `，牌面 ${events === null ? "预取失败降级" : events.length + " 条"}（>${cur}）`;
+	}
 	else if (part.id === "todo-review") note = `，牌面 ${board === null ? "预取失败降级" : board.lines.length + " 行/" + board.projects + " 项目"}`;
 	else if (part.id === "spoor-session") note = `，牌面 ${spoor === null ? "预取失败降级" : `够格${spoor.counts.ok}/跳过${spoor.counts.skip}（缺出处${spoor.counts.lackSource}·缺判据${spoor.counts.lackCriteria}·缺预算${spoor.counts.lackBudget}）·迁移${spoor.counts.migrated}·散文${spoor.counts.prose}/${spoor.projects} 项目`}`;
+	else if (part.id === "tideline-threads") note = `，牌面 ${threads === null ? "预取失败降级（库还没长出来）" : threads.length + " 条线索"}`;
 	console.log(`[conductor] 空闲 ${idleMin}min > ${IDLE_MS / 60000}min → 抽卡：${part.id}（${part.desc}）${note}`);
 	if (DRY) {
 		console.log(`[conductor] dry-run：不拉起，不记账。今日 draws=${day.draws}`);
 		// 演练面：注入型牌面（env-event/todo-review/spoor-session）的 prompt 整段出声——
 		// dry-run 即完整彩排（牌面+机判+纪律全可见）。分叉文案（不可达≠空）从演练面可断言，
 		// 测试不翻源码；前缀带 part id 防串台。
-		if (part.id === "env-event" || part.id === "todo-review" || part.id === "spoor-session") console.log(String(prompt).split("\n").map((l) => `[${part.id}-prompt] ${l}`).join("\n"));
+		if (part.id === "env-event" || part.id === "todo-review" || part.id === "spoor-session" || part.id === "tideline-threads") console.log(String(prompt).split("\n").map((l) => `[${part.id}-prompt] ${l}`).join("\n"));
 		// 死亡最小通道演练面：打印将落的 pending 行与回填计划（彩排不落盘）
 		const dryMax = events && events.length ? Math.max(...events.map((e) => e.id)) : null;
 		console.log(`[conductor] [dry-run] launch 先写后做预演：将落 pending 行 ${JSON.stringify({ day: today, part: part.id, ts: "(拉起时刻)", pid: "(spawn 后即补)" })}`);
@@ -699,6 +1298,7 @@ async function tick() {
 	if (st.launches.length > 200) st.launches.shift();
 	saveState(st);
 	console.log(`[conductor] 拉起 ${part.id} ...（launch 先写后做：pending 行已入账）`);
+	const t0 = Date.now();
 	const r = await launchPart({ ...part, prompt }, (pid) => {
 		launchRow.pid = pid;
 		saveState(st);
@@ -714,8 +1314,14 @@ async function tick() {
 	launchRow.exit = r.signal ? null : r.code;
 	launchRow.events = maxEventId;
 	if (spoorFaceHash) launchRow.faceHash = spoorFaceHash;
-	// 消费进度推进：只记 conductor 自己的 state，不碰 event-queue（只读界约）
-	if (maxEventId !== null) st.last_env_event_id = maxEventId;
+	if (r.signal || r.code !== 0) launchRow.tail = r.tail; // 死行带尾（≤500 字）——更夫判定行的死因面
+	// 消费进度推进（dualcard 双游标）：本地行推 last_env_event_local_id、远端行照旧推
+	// last_env_event_id——两套行号空间各自续消，谁也不吃谁的进度（独立性测试钉死）。
+	// 只记 conductor 自己的 state，不碰源库（只读界约）。
+	if (maxEventId !== null) {
+		if (eventSource === "local") st.last_env_event_local_id = maxEventId;
+		else st.last_env_event_id = maxEventId;
+	}
 	saveState(st);
 	if (r.signal) {
 		console.error(`[conductor] ${part.id} 死于信号 ${r.signal}——死因已入账（launch 行 signal 字段），尾 300 字：`);
@@ -725,6 +1331,11 @@ async function tick() {
 		console.error(r.tail.slice(-300));
 	} else {
 		console.log(`[conductor] ${part.id} 收工 exit=0（launch 行已回填）`);
+	}
+	// 更夫判定（F1，spike ②）：班次型任何死状 → log-only 判定行照出，不拉不计数不报备
+	//（下轮 tick 自然再抽＝既有正确行为，更夫只补一行判定账）。异常自己吞不拦抽卡。
+	if (r.signal || r.code !== 0) {
+		try { await watchmanNoteShiftDeath({ deadRow: { ...launchRow, ms: Date.now() - t0 }, partId: part.id }); } catch (e) { console.warn(`[conductor] 更夫判定异常（不拦收工路径）：${e?.message ?? e}`); }
 	}
 	return { acted: true, part: part.id, exit: r.code, signal: r.signal ?? null };
 }
@@ -745,7 +1356,8 @@ async function main() {
 		const { spend, n } = dailySpendYen();
 		console.log(JSON.stringify({
 			today, budget: DAILY_BUDGET, spendToday: Number(spend.toFixed(4)), nSessionsToday: n,
-			day: st.days[today] ?? null, lastLaunches: (st.launches ?? []).slice(-5), lastHotspotScan: st.last_hotspot_scan ?? null,
+			day: st.days[today] ?? null, lastLaunches: (st.launches ?? []).slice(-5), lastHotspotScan: st.last_hotspot_scan ?? null, lastRetroFire: st.last_retro_fire ?? null, lastScheduleFire: st.last_schedule_fire ?? null,
+			watchman: st.watchman ?? null, // 更夫面（F1）：relaunches/healCount/seamShouted——重拉账不用翻 journal 猜
 		}, null, 1));
 		return;
 	}
@@ -760,9 +1372,16 @@ async function main() {
 		}
 		console.log(`[conductor] 正典自检通过：${chk.reason}`);
 	}
-	console.log(`[conductor] 常驻启动：idle>${IDLE_MS / 60000}min tick=${TICK_MS / 1000}s budget=${DAILY_BUDGET} 元/日(JST) parts=${PARTS.length} node=${process.execPath} ${process.version}（19连抽事故的钉子：版本错位第一跳出声，不用验尸）`);
+	// F2 env 逃生门 fail-fast（验收 5，常驻面）：非法值出声退出——静默跑歪钟比停机更贵。
+	if (INBOX_TTL_MODE == null) {
+		console.error(`[conductor] CONDUCTOR_INBOX_TTL="${INBOX_TTL_RAW}" 不认（合法：day|24h|tiered，缺省 day=方案 A 正典）——出声退出（fail-fast）。修法：/etc/pianist/conductor.env 改合法值或删掉该行回默认 day。`);
+		process.exit(1);
+	}
+	console.log(`[conductor] 常驻启动：idle>${IDLE_MS / 60000}min tick=${TICK_MS / 1000}s budget=${DAILY_BUDGET} 元/日(JST) inbox-ttl=${INBOX_TTL_MODE} parts=${PARTS.length} node=${process.execPath} ${process.version}（19连抽事故的钉子：版本错位第一跳出声，不用验尸）`);
 	// SIGTERM 钩子已在 main 顶部全模式统一挂（sigtermHandler：在途行补 parent-down 后退）。
 	while (true) {
+		// F2 每天首 tick 收件箱按天清（常驻面钩子，watchman 验尸同族：在预算硬停/忙判早退之前）。
+		try { await inboxTtlDailySweep(); } catch (e) { console.warn(`[conductor] 收件箱按天清异常（不中断）：${e?.message ?? e}`); }
 		try { await tick(); } catch (e) { console.warn(`[conductor] tick 异常（不中断）：${e?.message ?? e}`); }
 		await new Promise((r) => setTimeout(r, TICK_MS));
 	}

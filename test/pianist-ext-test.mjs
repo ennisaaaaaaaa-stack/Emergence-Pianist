@@ -60,7 +60,6 @@ async function withMockShell(fn, routes) {
 
 console.log("hooks wired:", Object.keys(hooks).join(", "));
 console.log("tools registered:", tools.map(t => t.name).join(", "));
-
 // 1) 审批钩子：高危命令必须 block
 const r1 = await hooks["tool_call"][0]({ toolName: "bash", args: { command: "rm -rf /tmp/x" } }, {});
 console.log("approval blocks rm -rf:", r1?.block === true);
@@ -174,7 +173,15 @@ let silentOk = false;
 	console.log("silent drop in dismantled state (no warn):", silentOk);
 }
 
-const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats", r5c.threw === true && r5c.msg.includes("pianist_bridge") && r5c.msg.includes("可用"), r5d?.details?.wired === true && String(r5d?.content?.[0]?.text).includes("deferred"), r5e.threw === true && r5e.msg.includes("pianist_bridge") && r5e.msg.includes("Field required"), r5f?.details?.wired === true && String(r5f?.content?.[0]?.text).includes("STATUS"), r6 === true, silentOk];
+// 5f) 目录进 description（retro 工单 pianist-bridge-tool-desc-enumerate-actions 修法，2026-10-15）
+//     ——新 session 不再盲猜 API 面：description 必须枚举全部合法 action（单源 bridge-catalog）
+const { BRIDGE_CATALOG } = await createJiti(import.meta.url).import("../src/bridge-catalog.mjs");
+const bridge = tools.find((t) => t.name === "pianist_bridge");
+const missingActions = Object.keys(BRIDGE_CATALOG).filter((a) => !bridge.description.includes(a));
+console.log("bridge description enumerates all actions:", missingActions.length === 0 && bridge.description.includes("[red]"));
+if (missingActions.length) console.log("  缺：", missingActions.join(","));
+
+const checks = [r1?.block === true, r2 === undefined, r3 === undefined, r3b?.messages?.[0]?.role === "user" && String(r3b?.messages?.[0]?.content).includes("技能经图（Grimoire）"), entries[0]?.data.agent === "pianist-dev-1", out.details.wired === false, r5b?.length === 1 && r5b[0]?.body?.agent === "pianist-dev-1" && r5b[0]?.body?.action === "grimoire_stats", r5c.threw === true && r5c.msg.includes("pianist_bridge") && r5c.msg.includes("可用"), r5d?.details?.wired === true && String(r5d?.content?.[0]?.text).includes("deferred"), r5e.threw === true && r5e.msg.includes("pianist_bridge") && r5e.msg.includes("Field required"), r5f?.details?.wired === true && String(r5f?.content?.[0]?.text).includes("STATUS"), r6 === true, silentOk, missingActions.length === 0 && bridge.description.includes("[red]")];
 console.log("PASS " + checks.filter(Boolean).length + "/" + checks.length);
 // 门禁硬墙：红必须挡门（此前只 print 不 exit，全红也 exit 0，npm test 的 && 链拦不住）
 process.exit(checks.every(Boolean) ? 0 : 1);
