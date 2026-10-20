@@ -86,9 +86,37 @@ Hotspot heartbeat (2026-10-01 wander, claiming the 09-30 seed "the discovery loo
 
 Presence event ledger (F3, 2026-10-19): the orchestrator appends heartbeat events (`dispatch.started` / `dispatch.exited` / `verdict.received` / `watchman.judged` / `escalation.human`) to `data/events/emit-<date>.jsonl` — one JSONL day-file per JST day (date from the same `nowJstDay()` clock the F2 inbox sweep uses: write and expire share one clock), append-only, no cleanup (archiving is ops). It is a bypass ledger in both directions: a write failure warns and never blocks the main flow, and consumers (hearth/hearth, desktop, future dashboards) just tail the day file — emit only records that something happened. Architecture wall: the emit layer never couples to the other agent runtime's concept of a session — `emit.mjs` must not contain `hermes` or `session` even in comments (acceptance greps the comment-stripped source; the discipline's canonical home is this README plus the spec, which is why the file itself never mentions the forbidden words).
 
+## Session orchestration (the orchestrator)
+
+Beyond single dispatches, a casting-sheet orchestrator drives multi-role sessions: a sheet declares roles (builder→pianist, review roles, pointers), budgets (duration/token/money), sandbox tiers, and review bindings — a review-role column wires an independent reviewer agent after each builder delivery (verdict lands in the inbox; reviewer model is per-role, e.g. a cheap flash model for doc audits, full model for code). The runtime (`src/orchestrator/`) ships: real driver spawn with two-clock discipline (total clock + silence clock whose heartbeat source is the session file's mtime, never stdout — `pi -p` mode legitimately goes silent for the whole run), recursive session-file locking with an asymmetric window `[start-5s, start+150s]` (a symmetric window locks pre-dispatch smoke residue and kills good runs), and a completion pump that auto-dispatches review chains on delivery. A single-instance lockfile (O_EXCL, live-pid probe, stale takeover) makes duplicate dispatch of the same task a hard exit — same-task mutual exclusion is the driver's factory obligation, not the operator's discipline (2026-10-19 F1 incident).
+
+## F-line: unattended liveness (2026-10)
+
+Three services that keep the house alive while nobody watches:
+
+- **F1 watchman** (`src/watchman.mjs`, 2026-10-19): pure-function death classifier over the launch ledger — five death shapes (budget kill / hard-stop kill / exit-without-verdict / zero-spawn / unknown), a 24h sliding window, crash/heal twin ledgers, orphan-freshness guard, and a first-tick autopsy after host reboots (power-loss orphans get adjudicated within 5 minutes of boot; task-type stops escalate to human review, schedule-type stops relaunch up to N times).
+- **F2 inbox TTL**: the inbox is swept at the JST day boundary — day-scoped work never eats yesterday's leftovers, no unbounded replay. Legacy entries were backfilled once (migration pinned to read A, runtime fallback B forbidden); system-expired denials write a terminal state, they never silently drop.
+- **F3 presence event ledger** (see above): five-kind day files, the architectural wall between this runtime and any other agent runtime's session concept.
+
+## Sandbox port pipes (2026-10-19)
+
+Sandboxed agents reach local infrastructure (bridge ports, MCP servers) with zero consumer code change: `gate-proxy` opens a plain pipe socket per infrastructure port, `netns-relay --internal` carries it across the netns wall, the executor wires it in. A `vault.internal` reserved-domain approach was tried first and rejected — real consumers use native `fetch` that ignores proxy env vars, and the netns has no DNS: grep how consumers actually issue requests before choosing the interception layer.
+
+## Credential vault v2 (T16)
+
+Sidecar provenance per key (owner / purpose / scope-snapshot-at-mint / last-verified with declared-vs-tested source labels), tombstone lifecycle, status with the three provenance questions, use-accounting with task context. Test-seam discipline: every test that spawns a real conductor/retropad pins `PORTALK_CRED_DIR`/`PORTALK_CRED_JOURNAL` to a temp dir — the production ledger stays clean, and a `wc -l` before/after the full suite is the mechanical check for leaks.
+
+## Skill lifecycle (self-learning v2-2)
+
+`auto/` is the nursery: submissions pass four mechanical gates (shape, path discipline, trigger-word density, duplicate check), land as drafts with full injection/call parity (an `[auto·未过审]` tag is evidence disclosure, not a call switch — shadow drafts that never inject are this house's red line), and promotion hangs on the use layer (real retrieval hits via the bridge, `get_skill` = took, rendering = inject), never on self-reported views. A promotion scanner reports file-level use traces (mention vs retrieval vs creation-window) as cross-validation — the event ledger is the primary account, file traces corroborate, divergence reads as an alarm, not as noise. Retrospective verdicts feed back into the hotspot trigger (only shapes newer than the last verdict count — an always-true alarm is a deaf alarm). An environment manual (`APPEND_SYSTEM.md`, pi-native global injection: place the file and it's live, remove it and it's gone) tells fresh sessions the survival rules that are true across all tasks; task briefs never teach tool routing — routing knowledge in briefs is re-teaching on every dispatch.
+
+## Environment manual (T15)
+
+`~/.pi/agent/APPEND_SYSTEM.md` — pi's native discovery: project-level `<cwd>/.config/` (trusted projects) or global-level, appended verbatim to the system prompt for every session type (dispatch, draw, chat). Zero code, file-as-flag, negative-control by deletion. Verified by live replay: a vault-supplied single-shot asking "what rules are in your system prompt" — quoting the manual (including version-unique sentences, proving it's not cache) is the only valid acceptance; grepping session files can never see the context layer.
+
 ## Status
 
-Discovery loop shipped (telemetry → scanner → retropad → drafts) and teardown-tested. The candidate lifecycle (shadow / promote / reject, due budgets, exam fields) is not built yet — this repo tracks the first half of the loop only.
+Discovery loop shipped and teardown-tested (telemetry → scanner → retropad → drafts), now closing the second half: `auto/` nursery live with four mechanical gates, injection parity, use-layer promotion criteria, and file-trace cross-validation. Resident line: conductor four parts + heartbeat loop + F1/F2/F3 unattended liveness + credential vault v2 + sandbox with infrastructure port pipes. Session orchestration: casting sheets with review chains, two-clock drivers, single-instance locks — battle-tested across a dozen multi-role dispatches (including the copycat/freehand painter line where self-organized cross-task knowledge transfer was first observed: a fresh session retrieving another session's grid-resolution decision as a reference case, unprompted).
 
 Conductor part pool: wander / env-event / todo-review / spoor-session. spoor-session promoted 2026-09-25 (§8 second cut): the conductor pre-fetches the workbench "next steps" board and machine-checks the three-piece admission (provenance / acceptance criteria / due budget) per todo; the spawned session then rules on which qualified todos are worth acting on now (consensus-claim notify duty, budget-death rulings, first-round full roster for retroactive approval — notify-ring delivery lands in the next cut).
 
