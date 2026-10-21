@@ -90,5 +90,31 @@ check("场景E2：CONDUCTOR_PI_BIN 传 .mjs/.js（stub）时原样透传不做�
 	/piBin\.endsWith\("\.mjs"\) \|\| piBin\.endsWith\("\.js"\)/.test(src),
 	"");
 
+// ---- 场景F：牌面截断挂栏位（2026-10-22 修）——长条目句尾到期日不再被整行 160 截断吃掉 ----
+// 病历：真牌面一条 162 字 v0.9 条目，slice(0,160) 把「｜到期：2026-10-24」掰成「2026-10-…」，
+// todo-review 据牌面判「缺到期预算」跳过——牌面截断≠条目缺栏。修法：｜分栏截短（首栏80/附栏100），
+// 三件套栏整段可见；无栏长行退回整行截断。
+const tmpF = fs.mkdtempSync(path.join(os.tmpdir(), "todo-review-trunc-"));
+fs.mkdirSync(path.join(tmpF, "workbench", "proj-f"), { recursive: true });
+fs.writeFileSync(path.join(tmpF, "workbench", "proj-f", "STATUS.md"), [
+	"# STATUS",
+	"## 下一步",
+	"- T31 [collaborator-A] " + "超长标题".repeat(30) + " ｜collab#771 协商10/01「先复测再修再交」｜判据：npm test 全绿｜到期：2026-10-24",
+	"- T32 [collaborator-A] 短条目 ｜collab#772｜判据：六轨复测全对｜到期：2026-10-31",
+	"- T33 [collaborator-B] 无栏长散文行被整行截断不装分栏 " + "尾文".repeat(120),
+	"## 卡在哪",
+	"- 无",
+].join("\n"));
+const envF = { ...CLEAN_ENV, CONDUCTOR_STIGMERGY_ROOT: tmpF, CONDUCTOR_PARTS: "todo-review", CONDUCTOR_STATE_DIR: path.join(tmpF, "state"), CONDUCTOR_IDLE_NOW: "1", PIANIST_TELEMETRY_DIR: path.join(tmpF, "tel") };
+const outF = execFileSync(process.execPath, [path.join(CWD, "src", "conductor.mjs"), "--once", "--dry-run"], { env: envF, encoding: "utf8" });
+const fLines = outF.split("\n");
+const f31 = fLines.find((l) => l.includes("T31")) ?? "";
+check("场景F：>160 字长条目句尾到期日整段可见（三件套不被牌面吃掉）",
+	f31.includes("｜判据：npm test 全绿｜到期：2026-10-24"), f31.slice(0, 90));
+check("场景F2：标题栏超长仍截短且截点在栏界（…｜出处相邻）", f31.includes("…｜collab#771"), "");
+check("场景F3：短条目照旧整行可见", (fLines.find((l) => l.includes("T32")) ?? "").includes("判据：六轨复测全对｜到期：2026-10-31"), "");
+const f33 = fLines.find((l) => l.includes("T33")) ?? "";
+check("场景F4：无栏长行退回整行截断（…收尾不越限）", f33.includes("…") && !f33.includes("尾文".repeat(120)), "");
+
 console.log(`\n${pass}/${total}`);
 process.exit(pass === total ? 0 : 1);

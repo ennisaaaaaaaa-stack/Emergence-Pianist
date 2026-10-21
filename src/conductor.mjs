@@ -570,8 +570,18 @@ function fetchTodoBoard(partId = "todo-review", quiet = false) {
 					isProse = true;
 					note = "非条目·散文段";
 				}
-				let shown = raw.slice(0, 160);
-				if (raw.length > 160) shown += "…";
+				// 牌面截断挂栏位（2026-10-22 修）：整行 160 截断把句尾「｜到期：2026-10-24」掰成
+				// 「2026-10-…」——todo-review 实录把唯一够格且最近到期的长条目判「缺到期预算」跳过
+				// （牌面截断≠条目缺栏，三件套被牌面自己吃掉一件）。改法：｜分栏后只对标题栏（首栏
+				// 限 80）与超长附栏（限 100）截短，无栏长行退回整行截断——牌面再长，出处/判据/到期
+				// 三件套都看得见。
+				const shownCols = raw.split("｜");
+				let shown = shownCols.length > 1
+					? shownCols.map((cc, ci) => {
+						const cap = ci === 0 ? 80 : 100;
+						return cc.length > cap ? cc.slice(0, cap) + "…" : cc;
+					}).join("｜")
+					: raw.slice(0, 160) + (raw.length > 160 ? "…" : "");
 				if (note) shown += `（${note}）`; // 迁移/散文标注：看牌面的活人要知道这行是管线转的不是原文
 				lines.push(`- [${dir}] ${shown}`);
 				entries.push({ raw, isItem, note, migrated: isMigrated || undefined, prose: isProse || undefined });
